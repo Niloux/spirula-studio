@@ -824,6 +824,7 @@ void TrainerSession::seed_at_random() {
 void TrainerSession::load_dataset() {
     DatasetParserConfig pcfg;
     pcfg.recon_dir            = cfg.colmap_recon_dir;
+    pcfg.seed_pointcloud      = cfg.seed_pointcloud;
     pcfg.image_dir            = cfg.image_dir;
     pcfg.mask_dir             = cfg.mask_dir;
     pcfg.depth_dir            = cfg.depth_dir;
@@ -867,9 +868,7 @@ void TrainerSession::load_dataset() {
         if (take_gamut && !exr_info.gamut_known) log(lmsg::exr_gamut_unknown.get());
     }
 
-    // relative_scale scales the world: point means here, and the c2w
-    // translations pre-bake so the baked viewmats follow.
-    // auto_scale_poses=false makes the normalized frame the training frame.
+    // Scale both cloud and cameras before baking view matrices.
     if (cfg.relative_scale.has_value()) {
         float rs = *cfg.relative_scale;
         for (auto& v : ds.points.xyz) v *= rs;
@@ -1683,6 +1682,7 @@ void TrainerSession::eval() {
     // over all frames, so this is the exact complement of what training saw.
     DatasetParserConfig pcfg;
     pcfg.recon_dir            = cfg.colmap_recon_dir;
+    pcfg.seed_pointcloud      = cfg.seed_pointcloud;
     pcfg.image_dir            = cfg.image_dir;
     pcfg.mask_dir             = cfg.mask_dir;
     pcfg.depth_dir            = cfg.depth_dir;

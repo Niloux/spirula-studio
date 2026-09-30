@@ -2445,6 +2445,7 @@ const char* GuiApp::dir_key(PickAction a, FileDialog::Mode m) {
         case PickAction::RenderAddModel:
         case PickAction::MeshSource:        return "model";
         case PickAction::StencilFile:       return "stencil";
+        case PickAction::SeedPointcloud:    return "seed_pointcloud";
         case PickAction::RenderProjectSave:
         case PickAction::RenderProjectOpen: return "render_project";
         case PickAction::RenderOutput:      return "render_output";
@@ -2545,6 +2546,11 @@ void GuiApp::handle_dialog_result(const std::vector<std::string>& paths) {
             break;
         case PickAction::MeshSource:
             set_mesh_source(path);
+            break;
+        case PickAction::SeedPointcloud:
+            _cfg.seed_pointcloud = path;
+            _cfg_ui.touched.insert("seed_pointcloud");
+            _parse_dirty = true;
             break;
         case PickAction::StencilFile:
             if (_segment.is_open() && _mask_preview_input < (int)_sources.size())
@@ -8555,6 +8561,16 @@ void GuiApp::draw_train_settings() {
 
         ui::SeparatorText(msg::section_basic_options);
         draw_basic_options();
+
+        ui::Text(fld::seed_pointcloud);
+        ImGui::SetNextItemWidth(px(-70.0f));
+        if (ui::InputTextRaw("##seed_pointcloud", &_cfg.seed_pointcloud))
+            _cfg_ui.touched.insert("seed_pointcloud");
+        ui::help_on_hover(fld::seed_pointcloud_help);
+        ImGui::SameLine();
+        if (ui::ButtonRaw("...##seed_pointcloud_pick", ImVec2(60, 0)))
+            open_pick(PickAction::SeedPointcloud, fld::seed_pointcloud.get(),
+                      FileDialog::Mode::File, {".ply"});
 
         ImGui::Spacing();
         if (ui::CollapsingHeader(msg::section_all_options))
