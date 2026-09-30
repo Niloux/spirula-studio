@@ -80,6 +80,10 @@ and the cloud nonempty. Integer RGB is 0–255; floating RGB is 0–1.
 Relative paths resolve from the dataset directory; absolute paths also work.
 The GUI's training options include **Seed point cloud PLY** with a file picker;
 the CLI equivalent is `--seed-pointcloud lidar.ply`.
+Switching built-in training presets preserves this selection. **Use dataset
+points** clears the override and reloads the dataset's cloud. The GUI shows
+the initialization source and warns when another setting bypasses the selected
+external cloud.
 
 The external cloud replaces, rather than appends to, the format's own cloud.
 It must already align with the cameras in the source dataset coordinate frame

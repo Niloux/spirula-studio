@@ -796,6 +796,7 @@ void TrainerSession::set_alpha_config(DataManagerConfig& dm,
 // After relative_scale, so the cloud is sized by the cameras it will train
 // with. Into ds.points itself: the GUI's preview draws the seed that is used.
 void TrainerSession::seed_at_random() {
+    random_seeded = false;
     const std::string& mode = cfg.random_init;
     if (mode != "never" && mode != "auto" && mode != "always")
         throw std::runtime_error("unknown random_init '" + mode + "'");
@@ -813,6 +814,7 @@ void TrainerSession::seed_at_random() {
     rc.std_scale = cfg.random_init_std;
     RandomPointsFit fit;
     ds.points = random_seed_points(ds.c2w.data(), ds.num_cameras, rc, &fit);
+    random_seeded = true;
     if (had > 0) log(lfmt(lmsg::random_init_replaced, {(long long)had}));
     char sigma[96];
     std::snprintf(sigma, sizeof sigma, "%.4g, %.4g, %.4g",
