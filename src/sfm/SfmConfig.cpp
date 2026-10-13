@@ -471,10 +471,6 @@ std::string SfmConfig::finalize(uint32_t cmd) {
                "gauge; pass one";
     if (gps && image_dir.empty() && !(cmd & CMD_AUTO))
         return "--metric-gps reads each image's EXIF, so it needs --images";
-    // GPS is metres-accurate and a positions file is usually centimetres, so
-    // one default cannot serve both; 0 means "the one for this source".
-    if (metric_max_error == 0)
-        metric_max_error = metric_gps != "none" && metric_positions.empty() ? 5.0 : 0.5;
     if (!telemetry.empty()) {
         bool listed = false;
         for (const TelemetryInput& t : telemetry_inputs)
@@ -651,6 +647,15 @@ std::string stageSignature(const SfmConfig& cfg, uint32_t cmd) {
             }
             out += "\n";
         }
+    }
+    // Verification reads the gyro and GPS proposes pairs. Only what is held
+    // back is listed, so a state matched before the switches existed still fits.
+    if (cmd & (CMD_MATCH | CMD_MAP)) {
+        for (const TelemetryInput& t : cfg.telemetry_inputs)
+            if (!t.imu || !t.gps)
+                out += "telemetry " + t.prefix + (t.imu ? "" : " no-imu") + (t.gps ? "" : " no-gps") +
+                       "\n";
+        for (const std::string& p : cfg.exif_gps_off) out += "exif-gps-off " + p + "\n";
     }
     // A sequence adds its temporal window to the pair list.
     if (cmd & (CMD_MATCH | CMD_MAP))

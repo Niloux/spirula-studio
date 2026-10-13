@@ -65,12 +65,16 @@ public:
     // --- synchronization --------------------------------------------------
     void flush();  // submit what is recorded (does not wait)
     void sync();   // flush + wait for the queue to drain
+    // sync() for teardown, which must not throw: destructors free. Once it has
+    // failed the device is lost or hung, and every later call returns at once.
+    void drain() noexcept;
     // Dispatches recorded before flush() happens on its own. See the definition
     // for why an unbounded command buffer is not an option.
     static uint32_t max_dispatches_per_batch();
-    // FLOPs one submission may carry before the driver's watchdog is at risk
-    // (core/SubmitBudget.h). An op whose single dispatch would exceed it splits.
-    double workCap();
+    // FLOPs of this kernel one submission may carry before the driver's watchdog
+    // is at risk (core/SubmitBudget.h). An op whose single dispatch would exceed it
+    // splits.
+    double workCap(const char* entry, const SpecList& spec);
 
     // Makes the NEXT submission wait on an external timeline. Used by the video
     // decoder, whose work runs on a different queue family: the decode signals

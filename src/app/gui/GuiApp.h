@@ -125,7 +125,7 @@ private:
         MeshSource, MeshPhotos, MeshOutput, AddSplatFile, SplatFolder,
         EditSaveFile, EditSaveFolder, RenderProjectSave, RenderProjectOpen,
         RenderOutput, RenderAddModel, StencilFile, SeedPointcloud,
-        ConfigPath, LidarSource, ResumeRun
+        ConfigPath, LidarSource, ResumeRun, SourceLut
     };
     // Which reconstruction back end the New Dataset screen runs.
     enum class Engine { BuiltIn, Colmap };
@@ -400,7 +400,8 @@ private:
     void probe_recent();
     void draw_new_dataset();
     void draw_dataset_source();       // input list / output / resume
-    void draw_sensor_badge(const PrepInput& s);
+    bool draw_source_lut(size_t input);
+    void draw_sensor_toggles(PrepInput& s);
     void draw_dataset_basics();       // the four or five knobs a beginner needs
     void draw_source_cameras();       // one lens per input, when there are several
     void draw_rig_kinds(const std::vector<CameraGroup>& groups,
@@ -907,6 +908,10 @@ private:
     // nothing (draw_dataset_source).
     std::vector<std::string> _fps_text;
     int _fps_editing = -1;
+    // The screen's "Advanced" header as last drawn. What a beginner should not
+    // have to read -- an input's LUT, starting focal, rig -- shows in place only
+    // while it is open, so the input list is never drawn twice.
+    bool _ds_advanced = false;
     // What each input's IMU / GPS holds, read on its own thread and keyed by
     // path, so re-choosing a file already read costs nothing.
     TelemetryProbe _telemetry;
@@ -971,7 +976,7 @@ private:
     void draw_dense_advanced();
     void draw_train_mask_mode(float width);
     void draw_seed_cloud(TrainRunner::Phase ph);
-    void draw_dataset_geometry();
+    void draw_dataset_aux(float width);
     bool dense_cloud_present();
     std::string _dense_probe_data;     // dense_cloud_present()'s cache
     double _dense_probe_time = -1.0;
@@ -1102,6 +1107,7 @@ private:
     FileDialog _dialog;
     PickAction _pick = PickAction::None;
     std::string _pick_key;            // dir_key() of the pick in flight
+    int _pick_lut = -1;               // which input PickAction::SourceLut sets
     int _pick_source = -1;            // which input PickAction::SourceReplace edits
     std::string _pick_field;          // which flag PickAction::ConfigPath sets
     // Which batch row the pending pick edits; -1 appends a new row.

@@ -82,6 +82,10 @@ void normalize_source_lenses(std::vector<PrepInput>& sources,
 // because that is what a preset saves and what every batch item starts from.
 void normalize_source_fps(std::vector<PrepInput>& sources, float& video_fps);
 
+// And the LUT: a row choosing what automatic would give it anyway goes back to
+// automatic, so it keeps following the rows above it.
+void normalize_source_luts(std::vector<PrepInput>& sources);
+
 // One lens for the whole capture, written to every input rather than only the
 // first -- the single "Camera / lens" control speaks for all of them.
 void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
@@ -92,8 +96,14 @@ void apply_lens_to_sources(std::vector<PrepInput>& sources, SfmJob& sfm,
 void apply_pano_lens(std::vector<PrepInput>& sources, SfmJob& sfm,
                      ColmapJob& colmap);
 
-// The reconstruction settings the LIST decides: a video is a capture in order,
-// a dual-lens file is a rig, a 360 file is one camera warped into views. Run
+// What the first input's Sequential switch decides: a video handed over in
+// order is captured as one (temporal pairing); anything else pairs by content.
+// Run when that switch moves; "internet" and the vocabulary tree are left be.
+void apply_capture_order(const std::vector<PrepInput>& sources, SfmJob& sfm,
+                         ColmapJob& colmap);
+
+// The reconstruction settings the LIST decides: the capture order above, a
+// dual-lens file is a rig, a 360 file is one camera warped into views. Run
 // when the list changes, before any preset is applied over it.
 void apply_capture_defaults(std::vector<PrepInput>& sources, SfmJob& sfm,
                             ColmapJob& colmap);

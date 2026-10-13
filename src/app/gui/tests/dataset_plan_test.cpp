@@ -113,6 +113,30 @@ int main() {
     const fs::path ws = fs::temp_directory_path() / "spirula_dataset_plan_test";
     const SfmJob made = video_job(ws);
 
+    // ---- which LUT a row's frames go through ---------------------------------
+    {
+        std::vector<PrepInput> rows(5);
+        for (PrepInput& r : rows) r.is_video = true;
+        rows[0].lut_detected = "builtin:dji-dlog-m";
+        expect(input_lut(rows, 0) == "builtin:dji-dlog-m" && input_lut(rows, 1).empty(),
+               "a detected LUT stays with its own file");
+        rows[0].lut = "a.cube";
+        rows[2].lut_detected = "builtin:gopro-gplog";
+        rows[3].lut = kLutNone;
+        expect(input_lut(rows, 0) == "a.cube" && input_lut(rows, 1) == "a.cube" &&
+                   input_lut(rows, 2) == "builtin:gopro-gplog" && input_lut(rows, 3).empty() &&
+                   input_lut(rows, 4).empty(),
+               "a choice carries down until a file says otherwise or a row says none");
+        SfmJob a = made, b = made;
+        b.prep.inputs[0].lut_detected = "builtin:dji-dlog-m";
+        const StepFields fb = frames_fields(b.prep);
+        bool verbatim = false;
+        for (const StepField& f : fb)
+            verbatim = verbatim || (f.key == "lut" && f.value == "builtin:dji-dlog-m");
+        expect(!(frames_fields(a.prep) == fb) && verbatim,
+               "a detected LUT is part of the frames, named as it is");
+    }
+
     // ---- the fields --------------------------------------------------------
     {
         SfmJob a = made, b = made;
@@ -370,6 +394,26 @@ int main() {
                    p[ModelPart::Mapping].why == Why::Settings,
                "a mapper setting only maps again");
         j = made;
+        j.prep.inputs[0].use_gps = false;
+        p = plan(j);
+        expect(p[ModelPart::Features].act == Act::Reuse &&
+                   p[ModelPart::Matching].act == Act::Redo &&
+                   p[ModelPart::Matching].changes.size() == 1 &&
+                   p[ModelPart::Matching].changes[0].key == "gps",
+               "a video's GPS switched off matches again, naming itself");
+        j = made;
+        j.prep.inputs[0].sequential = true;
+        p = plan(j);
+        expect(p[ModelPart::Matching].act == Act::Redo &&
+                   p[ModelPart::Matching].changes.size() == 1 &&
+                   p[ModelPart::Matching].changes[0].key == "sequence" &&
+                   p[ModelPart::Matching].changes[0].scope == "cam0,cam1",
+               "a video's order, asked for, is its two lenses as one sequence");
+        bool switches = false;
+        for (const StepField& f : model_fields(made))
+            switches = switches || f.key == "sequence" || f.key == "imu" || f.key == "gps";
+        expect(!switches, "a video's order is off by default, and sensors left on add no field");
+        j = made;
         j.prep.mask_dilate_ratio = 0.08f;
         p = plan(j, redo);
         expect(p[ModelPart::Features].act == Act::Redo &&
@@ -519,6 +563,21 @@ int main() {
             StepRecorder again(ws.string(), read_dataset_record(ws.string()));
             again.begin(Step::Dense, dense_fields(j.dense), {"roma.ply"}); again.finish(Step::Dense);
         }
+        {
+            // Balanced's pairing before neighbours and references measured the surface.
+            auto before = j;
+            before.dense.config.apply_preset("balanced");
+            before.dense.config.pairs.neighbors = 6; before.dense.config.pairs.reference_coverage = 3;
+            auto now = j;
+            now.dense.config.apply_preset("balanced");
+            StepRecorder old(ws.string(), read_dataset_record(ws.string()));
+            old.begin(Step::Dense, dense_fields(before.dense), {"roma.ply"}); old.finish(Step::Dense);
+            expect(plan(now)[Step::Dense].act == Act::Reuse, "a cloud from a preset's old pairing is not reused under that preset");
+            now.dense.config.pairs.neighbors = 4;
+            expect(plan(now)[Step::Dense].act == Act::Redo, "a neighbour change after migration did not invalidate dense output");
+            StepRecorder again(ws.string(), read_dataset_record(ws.string()));
+            again.begin(Step::Dense, dense_fields(j.dense), {"roma.ply"}); again.finish(Step::Dense);
+        }
         std::atomic<bool> verification_cancel{false};
         auto verified = plan(j); verify_dense_reuse(verified,ws.string(),verification_cancel);
         expect(verified[Step::Dense].act == Act::Reuse,"dense reuse verifies source contents and cloud checksum");
@@ -621,6 +680,35 @@ int main() {
         p = plan(j);
         expect(p[Step::Frames].act == Act::Redo && p.ask(),
                "... and still notices a new rate");
+    }
+
+    // ---- a row's switches, back from the record ------------------------------
+    {
+        const fs::path w = ws.string() + "_order";
+        build(w, video_job(w));
+        SfmJob back = video_job(w);
+        back.prep.inputs[0].use_imu = false;
+        restore_record_inputs(read_dataset_record(w.string()), back.prep, back.camera_model);
+        expect(!back.prep.inputs[0].sequential && back.prep.inputs[0].use_imu,
+               "a record made with the switches at their defaults gives them back");
+
+        SfmJob ran = video_job(w);
+        ran.prep.inputs[0].sequential = true;
+        ran.prep.inputs[0].use_gps = false;
+        build(w, ran);
+        // As a record from before the switch has the row: every video went in
+        // order, and only the model's sequence says so.
+        SfmJob unset = ran;
+        unset.prep.inputs[0].sequential = false;
+        const bool all[kNumSteps] = {true, true, true, true};
+        write_record_settings(w.string(), "{}", encode_record_inputs({unset.prep.inputs, {}}), all);
+        back = video_job(w);
+        restore_record_inputs(read_dataset_record(w.string()), back.prep, back.camera_model);
+        expect(back.prep.inputs[0].sequential, "a video that ran in order comes back in order");
+        expect(!back.prep.inputs[0].use_gps && back.prep.inputs[0].use_imu,
+               "... with its sensor switches as they were");
+        expect(plan(back)[Step::Model].act == Act::Reuse, "... and its model is reused");
+        fs::remove_all(w);
     }
 
     // ---- and what the old stamps still say, back on the panel --------------

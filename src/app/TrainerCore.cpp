@@ -794,7 +794,7 @@ void TrainerSession::load_region() {
 
 void TrainerSession::setup_region() {
     if (!roi) {
-        engine_set_region({}, {}, {}, {}, {}, 1.0f);
+        engine_set_region({}, {}, {}, {}, {}, {}, 1.0f);
         return;
     }
     // The region is in the dataset's frame, the splats in the training frame.
@@ -816,9 +816,10 @@ void TrainerSession::setup_region() {
         if (v.empty()) return {};
         return {(uint64_t)(uintptr_t)v.data(), (uint32_t)sizeof(float), {(int64_t)v.size() / 4, 4}};
     };
+    const std::vector<float> pattern = region_sample_pattern(cfg.roi_splat_samples);
     engine_set_region(tv(prog.nodes), tv(prog.field ? prog.field->nodes : none),
                       tv(prog.field ? prog.field->seeds : none), tv(cams.nodes), tv(cams.seeds),
-                      cfg.roi_outside_weight, cfg.roi_outside_opacity_decay);
+                      tv(pattern), cfg.roi_outside_weight, cfg.roi_outside_opacity_decay);
     log(lfmt(lmsg::region_applied, {prog.num_nodes(), cfg.roi_outside_weight}));
 }
 
@@ -1896,12 +1897,12 @@ std::vector<uint8_t> to_png_bytes(const std::vector<float>& rgb) {
 
 }  // namespace
 
-void TrainerSession::eval() {
+void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_progress) {
     // eval_mode "all" trains on every frame, so nothing is held out.
     if (cfg.eval_mode == "all") return;
 
-    // Re-parse for the eval side of the split. The parser computes the split
-    // over all frames, so this is the exact complement of what training saw.
+    // Re-parse the held-out side of the split over all frames, so its
+    // normalization exactly matches the images training saw.
     DatasetParserConfig pcfg;
     pcfg.recon_dir            = cfg.colmap_recon_dir;
     pcfg.seed_pointcloud      = parser_seed(cfg.seed_pointcloud);
@@ -1982,6 +1983,7 @@ void TrainerSession::eval() {
     }
 
     log(lfmt(lmsg::eval_views, {(long long)epost.n_post}));
+    if (on_progress) on_progress({0, epost.n_post});
 
     // Rendering is serial (one process-global engine), but scoring a view --
     // colour correction, the metrics, and the PNG encode -- is pure host work
@@ -2015,9 +2017,18 @@ void TrainerSession::eval() {
     std::deque<ViewJob> queue;
     std::vector<ViewScore> scores;
     std::mutex qmu, smu;
+    std::mutex progress_mu;
     std::condition_variable qcv, spacecv;
     bool producing = true;
+    std::atomic<bool> worker_failed = false;
     std::exception_ptr worker_error;
+
+    int64_t completed = 0;
+    auto report_progress = [&] {
+        if (!on_progress) return;
+        std::lock_guard<std::mutex> lk(progress_mu);
+        on_progress({++completed, epost.n_post});
+    };
 
     auto score_view = [&](ViewJob& j) {
         const int64_t view_px = (int64_t)j.H * j.W * j.C;
@@ -2043,8 +2054,10 @@ void TrainerSession::eval() {
                 std::snprintf(nm, sizeof nm, "eval-%s-%05d.png", kind,
                               (int)j.index);
                 std::vector<uint8_t> bytes = to_png_bytes(img);
-                stbi_write_png((out_dir / nm).string().c_str(), j.W, j.H, j.C,
-                               bytes.data(), j.W * j.C);
+                const fs::path path = out_dir / nm;
+                if (!stbi_write_png(path.string().c_str(), j.W, j.H, j.C,
+                                    bytes.data(), j.W * j.C))
+                    throw std::runtime_error("cannot write " + path.string());
             };
             // Both sides, because the LPIPS tool needs the pair -- and the
             // 8-bit clip here is what it will score, so its numbers are
@@ -2052,6 +2065,7 @@ void TrainerSession::eval() {
             png("gt", j.gt);
             png("render", j.pred);
         }
+        report_progress();
     };
 
     std::vector<std::thread> workers;
@@ -2075,8 +2089,12 @@ void TrainerSession::eval() {
                 try {
                     score_view(job);
                 } catch (...) {
-                    std::lock_guard<std::mutex> lk(smu);
-                    if (!worker_error) worker_error = std::current_exception();
+                    {
+                        std::lock_guard<std::mutex> lk(smu);
+                        if (!worker_error) worker_error = std::current_exception();
+                    }
+                    worker_failed = true;
+                    spacecv.notify_all();
                     return;
                 }
             }
@@ -2085,8 +2103,10 @@ void TrainerSession::eval() {
 
     const int sh_deg = cfg.sh_degree;
     int64_t next_slot = 0;
+    bool stopped = false;
 
     for (int64_t i = 0; i < eds.num_cameras; i++) {
+        if (stop_requested.load() || worker_failed.load()) break;
         int64_t H = 0, W = 0, B = 0, Cc = 0;
         std::vector<float> gt, render;
         {
@@ -2120,11 +2140,19 @@ void TrainerSession::eval() {
             for (float& x : job.pred) x = std::min(std::max(x, 0.0f), 1.0f);
             {
                 std::unique_lock<std::mutex> lk(qmu);
-                spacecv.wait(lk, [&] { return (int)queue.size() < n_workers; });
+                spacecv.wait(lk, [&] {
+                    return (int)queue.size() < n_workers || worker_failed.load() ||
+                           stop_requested.load();
+                });
+                if (worker_failed.load() || stop_requested.load()) {
+                    stopped = true;
+                    break;
+                }
                 queue.push_back(std::move(job));
             }
             qcv.notify_one();
         }
+        if (stopped) break;
     }
 
     {

@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -193,6 +194,9 @@ struct Movie {
     uint64_t creation_1904 = 0;
     VideoProjection projection;
     std::vector<Track> tracks;
+    // Where makers put their settings as text or KLV: udta, moov/meta, and a
+    // top-level meta (Sony's XML). Copies, for video_log_profile.
+    std::vector<uint8_t> udta, moov_meta, file_meta;
     double durationSec() const { return timescale ? (double)duration / timescale : 0.0; }
     // 1904-01-01 to 1970-01-01.
     double unixStart() const { return creation_1904 ? (double)creation_1904 - 2082844800.0 : 0.0; }
@@ -342,6 +346,8 @@ bool read_movie(const Source& src, Movie& mv, bool& is_mp4, std::string& error) 
         }
         if (size < h || off + size > src.size()) break;
         if (type == fourcc("ftyp")) is_mp4 = true;
+        if (type == fourcc("meta") && size - h < (4u << 20))
+            src.readVec(off + h, (size_t)(size - h), mv.file_meta);
         if (type == fourcc("moov")) {
             if (size - h > (1ull << 30)) { error = "moov box over 1 GiB"; return false; }
             if (!src.readVec(off + h, (size_t)(size - h), moov)) { error = "truncated moov"; return false; }
@@ -366,9 +372,12 @@ bool read_movie(const Source& src, Movie& mv, bool& is_mp4, std::string& error) 
             Track tk;
             if (parse_trak(b.payload, b.payload_size, tk)) mv.tracks.push_back(std::move(tk));
         } else if (b.type == fourcc("udta")) {
+            mv.udta.assign(b.payload, b.payload + b.payload_size);
             Box g;
             if (find_box(b.payload, b.payload_size, fourcc("GPMF"), g))
                 gpmf_projection(g.payload, g.payload_size, 0, mv.projection);
+        } else if (b.type == fourcc("meta")) {
+            mv.moov_meta.assign(b.payload, b.payload + b.payload_size);
         }
     });
     return true;
@@ -1114,79 +1123,113 @@ bool insta_detect(const Source& src) {
     return src.read(src.size() - 32, magic, 32) && std::memcmp(magic, kInstaMagic, 32) == 0;
 }
 
-bool read_insta360(const Source& src, const Movie* mv, Telemetry& out, std::string& error) {
-    uint8_t hdr[kInstaHeader];
-    if (!src.read(src.size() - kInstaHeader, hdr, kInstaHeader)) { error = "short Insta360 trailer"; return false; }
-    const uint64_t extra_size = le32(hdr + 32);
-    if (extra_size > src.size()) { error = "Insta360 trailer size exceeds the file"; return false; }
+struct InstaRec { uint8_t id, format; uint64_t offset, size; };
 
-    // Each record ends in [format u8][id u8][size u32]; the one nearest the
-    // header may be a table of (id, format, size, offset). Records past the
-    // thumbnail are padded apart, so a backwards walk alone lands in zeros.
-    struct Rec { uint8_t id, format; uint64_t offset, size; };
-    std::vector<Rec> recs;
+// A table of (id, format, size, offset) nearest the header is the only index:
+// an Antigravity A1 writes records in 256 KiB slots with no [format u8][id u8]
+// [size u32] descriptor after each, which an X5 has and the fallback walks.
+std::vector<InstaRec> insta_records(const Source& src, uint64_t extra_size) {
+    std::vector<InstaRec> recs;
     const uint64_t extra_start = src.size() - extra_size;
     uint64_t back = kInstaHeader + 6;
     std::vector<uint8_t> buf;
-    {
-        uint8_t r[6];
-        if (src.read(src.size() - back, r, 6) && r[1] == 0) {
-            const uint64_t size = le32(r + 2);
-            if (size <= src.size() - back && src.readVec(src.size() - back - size, (size_t)size, buf)) {
-                for (size_t o = 0; o + 10 <= buf.size(); o += 10) {
-                    const uint8_t* e = buf.data() + o;
-                    const uint64_t rsize = le32(e + 2), roff = le32(e + 6);
-                    if (e[0] == 0 || rsize == 0 || extra_start + roff + rsize + 6 > src.size()) continue;
-                    uint8_t tail[6];
-                    if (!src.read(extra_start + roff + rsize, tail, 6) || tail[1] != e[0] || le32(tail + 2) != rsize) continue;
-                    recs.push_back({e[0], e[1], extra_start + roff, rsize});
-                }
+    uint8_t r[6];
+    if (src.read(src.size() - back, r, 6) && r[1] == 0) {
+        const uint64_t size = le32(r + 2);
+        if (size <= src.size() - back && src.readVec(src.size() - back - size, (size_t)size, buf)) {
+            for (size_t o = 0; o + 10 <= buf.size(); o += 10) {
+                const uint8_t* e = buf.data() + o;
+                const uint64_t rsize = le32(e + 2), roff = le32(e + 6);
+                if (e[0] == 0 || rsize == 0 || roff + rsize > extra_size) continue;
+                recs.push_back({e[0], e[1], extra_start + roff, rsize});
             }
+            if (!recs.empty()) return recs;
         }
     }
-    const bool walk = recs.empty();
-    while (walk && back <= extra_size) {
-        uint8_t r[6];
+    while (back <= extra_size) {
         if (!src.read(src.size() - back, r, 6)) break;
         const uint64_t size = le32(r + 2);
         if (size > src.size() - back) break;
         recs.push_back({r[1], r[0], src.size() - back - size, size});
         back += size + 6;
     }
+    return recs;
+}
 
+bool insta_extra_size(const Source& src, uint64_t& extra_size) {
+    uint8_t hdr[kInstaHeader];
+    if (!src.read(src.size() - kInstaHeader, hdr, kInstaHeader)) return false;
+    extra_size = le32(hdr + 32);
+    return extra_size <= src.size();
+}
+
+InstaMeta insta_read_meta(const Source& src, const std::vector<InstaRec>& recs) {
     InstaMeta meta;
-    for (const Rec& r : recs) {
+    std::vector<uint8_t> buf;
+    for (const InstaRec& r : recs) {
         if (r.id != 1 || r.size > (16u << 20)) continue;
         if (!src.readVec(r.offset, (size_t)r.size, buf)) continue;
         insta_meta(buf.data(), buf.size(), meta);
     }
+    return meta;
+}
+
+bool insta_has_sensors(const std::vector<InstaRec>& recs) {
+    return std::any_of(recs.begin(), recs.end(), [](const InstaRec& r) { return r.id == 3 || r.id == 7; });
+}
+
+// `original`, when given, is the full-resolution file of a proxy that carries
+// no IMU or GPS of its own (an A1 PRX_*.prx beside its VID_*.insv). It is used
+// only when it names the same camera and the same first frame.
+bool read_insta360(const Source& own, const Movie* mv, Telemetry& out, std::string& error,
+                   const Source* original = nullptr, const std::string& original_name = {}) {
+    uint64_t extra_size = 0;
+    if (!insta_extra_size(own, extra_size)) { error = "Insta360 trailer size exceeds the file"; return false; }
+    std::vector<InstaRec> recs = insta_records(own, extra_size);
+    const InstaMeta meta = insta_read_meta(own, recs);
+
+    const Source* data_src = &own;
+    InstaMeta dec = meta;
+    uint64_t orig_extra = 0;
+    if (!insta_has_sensors(recs) && original && insta_detect(*original) && insta_extra_size(*original, orig_extra)) {
+        std::vector<InstaRec> orecs = insta_records(*original, orig_extra);
+        const InstaMeta ometa = insta_read_meta(*original, orecs);
+        if (insta_has_sensors(orecs) && ometa.serial == meta.serial &&
+            ometa.first_frame_ts == meta.first_frame_ts) {
+            recs = std::move(orecs);
+            dec = ometa;
+            data_src = original;
+        }
+    }
+    const Source& src = *data_src;
+    std::vector<uint8_t> buf;
 
     // Timestamps are relative to the first frame, as telemetry-parser (the
     // reference for this layout) computes them; the raw-gyro variant stamps
     // in microseconds and the float one in milliseconds.
     const double fft = (double)meta.first_frame_ts / 1000.0;
-    const double gyro_shift = meta.has_gyro_ts ? meta.gyro_ts / 1000.0 : 0.0;
+    const double gyro_shift = dec.has_gyro_ts ? dec.gyro_ts / 1000.0 : 0.0;
     auto fix_time = [&](double raw_ms) {
         double t = raw_ms / 1000.0 - fft;
-        if (meta.raw_gyro) t /= 1000.0;
+        if (dec.raw_gyro) t /= 1000.0;
         return t - gyro_shift;
     };
 
     bool any = false;
-    for (const Rec& r : recs) {
+    for (const InstaRec& r : recs) {
         if (r.id == 3) {
             if (r.size > (1ull << 31) || !src.readVec(r.offset, (size_t)r.size, buf)) { error = "unreadable Insta360 gyro record"; return false; }
-            const size_t item = meta.raw_gyro ? 8 + 6 * 2 : 8 + 6 * 8;
+            const size_t item = dec.raw_gyro ? 8 + 6 * 2 : 8 + 6 * 8;
             const size_t n = buf.size() / item;
             out.accel.reserve(out.accel.size() + n);
             out.gyro.reserve(out.gyro.size() + n);
-            const double acc_scale = meta.raw_gyro ? meta.acc_range / 32768.0 : 1.0;
-            const double gyro_scale = meta.raw_gyro ? meta.gyro_range / 32768.0 * kPi / 180.0 : 1.0;
+            const double acc_scale = dec.raw_gyro ? dec.acc_range / 32768.0 : 1.0;
+            const double gyro_scale = dec.raw_gyro ? dec.gyro_range / 32768.0 * kPi / 180.0 : 1.0;
             for (size_t i = 0; i < n; i++) {
                 const uint8_t* p = buf.data() + i * item;
                 const double t = fix_time((double)le64(p));
                 double a[3], g[3];
-                if (meta.raw_gyro) {
+                if (dec.raw_gyro) {
                     for (int k = 0; k < 3; k++) a[k] = ((double)le16(p + 8 + 2 * k) - 32768.0) * acc_scale;
                     for (int k = 0; k < 3; k++) g[k] = ((double)le16(p + 14 + 2 * k) - 32768.0) * gyro_scale;
                 } else {
@@ -1234,7 +1277,8 @@ bool read_insta360(const Source& src, const Movie* mv, Telemetry& out, std::stri
         out.video_unix_start = start;
         for (TelemetryGps& g : out.gps) g.t = g.unix_time - start;
     }
-    out.notes.push_back(std::string("gyro record ") + (meta.raw_gyro ? "raw int16" : "float64") +
+    if (data_src != &own) out.notes.push_back("IMU and GPS read from " + original_name + ": this file carries none");
+    out.notes.push_back(std::string("gyro record ") + (dec.raw_gyro ? "raw int16" : "float64") +
                         "; accel converted from g; axes are the IMU's own, not the lens frame");
     if (!meta.offset_v3.empty()) out.notes.push_back("offset_v3 lens calibration present (" +
                                                      std::to_string(meta.offset_v3.size()) + " chars)");
@@ -1246,7 +1290,8 @@ bool read_insta360(const Source& src, const Movie* mv, Telemetry& out, std::stri
 // Driver
 // ================
 
-bool read_any(const Source& src, Telemetry& out, std::string& error) {
+bool read_any(const Source& src, Telemetry& out, std::string& error,
+              const Source* original = nullptr, const std::string& original_name = {}) {
     out = Telemetry();
     Movie mv;
     bool is_mp4 = false;
@@ -1264,7 +1309,7 @@ bool read_any(const Source& src, Telemetry& out, std::string& error) {
         for (const Track& tk : mv.tracks)
             if (tk.handler == fourcc("vide") && tk.fps() > 0) { out.video_fps = tk.fps(); break; }
     }
-    if (insta) return read_insta360(src, have_movie ? &mv : nullptr, out, error);
+    if (insta) return read_insta360(src, have_movie ? &mv : nullptr, out, error, original, original_name);
     for (const Track& tk : mv.tracks) {
         if (tk.sample_type == fourcc("gpmd")) { if (!read_gpmf(src, tk, out, error)) return false; }
         else if (tk.sample_type == fourcc("camm")) { if (!read_camm(src, tk, out, error)) return false; }
@@ -1387,9 +1432,29 @@ std::string fmt(const char* f, double a, double b = 0, double c = 0) {
 // Public entry points
 // ================
 
+// An Antigravity A1 writes PRX_<stamp>.prx, a proxy, beside VID_<stamp>.insv.
+static std::string insta_original_of(const std::string& path) {
+    namespace fs = std::filesystem;
+    const fs::path p(path);
+    const std::string stem = p.stem().string();
+    std::string ext = p.extension().string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    if (ext != ".prx" || stem.rfind("PRX_", 0) != 0) return {};
+    for (const char* e : {".insv", ".INSV"}) {
+        const fs::path v = p.parent_path() / ("VID_" + stem.substr(4) + e);
+        std::error_code ec;
+        if (fs::is_regular_file(v, ec)) return v.string();
+    }
+    return {};
+}
+
 bool telemetry_read(const std::string& path, Telemetry& out, std::string& error) {
     FileSource src;
     if (!src.open(path)) { error = "cannot open '" + path + "'"; return false; }
+    FileSource original;
+    const std::string original_path = insta_original_of(path);
+    if (!original_path.empty() && original.open(original_path))
+        return read_any(src, out, error, &original, std::filesystem::path(original_path).filename().string());
     return read_any(src, out, error);
 }
 
@@ -1401,6 +1466,108 @@ VideoProjection video_projection(const std::string& path) {
     std::string error;
     if (!read_movie(src, mv, is_mp4, error)) return VideoProjection();
     return mv.projection;
+}
+
+namespace {
+
+// DVID 1 is the "Global Settings" device; its PTCL is the colour profile.
+// FLAT is a log curve too, but not GP-Log's, so it is not one of these.
+std::string gpmf_protune_color(const uint8_t* p, size_t n) {
+    for (size_t off = 0; off + 8 <= n;) {
+        Klv k;
+        if (!klv_read(p + off, n - off, k)) break;
+        if (k.type == 0 && k.key == fourcc("DEVC")) {
+            bool global = false;
+            std::string ptcl;
+            for (size_t o = 0; o + 8 <= k.len();) {
+                Klv c;
+                if (!klv_read(k.data + o, k.len() - o, c)) break;
+                if (c.key == fourcc("DVID") && c.type == 'L' && c.len() >= 4)
+                    global = be32(c.data) == 1;
+                else if (c.key == fourcc("PTCL") && c.type == 'c')
+                    ptcl.assign((const char*)c.data, strnlen((const char*)c.data, c.len()));
+                o += 8 + c.padded();
+            }
+            if (global && !ptcl.empty()) return ptcl;
+        }
+        off += 8 + k.padded();
+    }
+    return {};
+}
+
+// `<Item name="NAME" value="VALUE"/>` in Sony's NonRealTimeMeta XML.
+std::string xml_item(const std::string& xml, const char* name) {
+    const std::string key = std::string("name=\"") + name + "\" value=\"";
+    const size_t a = xml.find(key);
+    if (a == std::string::npos) return {};
+    const size_t b = xml.find('"', a + key.size());
+    return b == std::string::npos ? std::string() : xml.substr(a + key.size(), b - a - key.size());
+}
+
+// ColorMode.color_mode, where each dvtm proto keeps it; 0 is Default and is
+// omitted, as proto3 does. -1 for a proto whose path was not read off a clip.
+int dji_color_mode(const uint8_t* sample, size_t n, std::string& proto) {
+    const auto top = pb_fields(sample, n);
+    proto = pb_string(pb_find(pb_sub(pb_find(pb_sub(pb_find(top, 1)), 1)), 1));
+    const auto stream = pb_sub(pb_find(top, 2));
+    std::vector<PbField> color;
+    if (proto == "dvtm_ac204.proto" || proto == "dvtm_oq101.proto")
+        color = pb_sub(pb_find(stream, 4));
+    else if (proto == "dvtm_AVATA360.proto" || proto == "dvtm_eagle4_wa530.proto")
+        color = pb_sub(pb_find(pb_sub(pb_find(stream, 2)), 4));
+    else
+        return -1;
+    const PbField* f = pb_find(color, 1);
+    return f && f->wire == 0 ? (int)f->varint : 0;
+}
+
+}  // namespace
+
+VideoLogProfile video_log_profile(const std::string& path) {
+    VideoLogProfile out;
+    FileSource src;
+    Movie mv;
+    bool is_mp4 = false;
+    std::string error;
+    if (!src.open(path) || !read_movie(src, mv, is_mp4, error)) return out;
+
+    const std::string xml(mv.file_meta.begin(), mv.file_meta.end());
+    const std::string gamma = xml_item(xml, "CaptureGammaEquation");
+    if (gamma == "s-log3-cine" ||
+        (gamma == "s-log3" && xml_item(xml, "CaptureColorPrimaries") == "S-Gamut3-Cine")) {
+        out.log = "s-log3-cine";
+        return out;
+    }
+
+    std::vector<uint8_t> buf;
+    for (const Track& tk : mv.tracks) {
+        if (tk.sample_type != fourcc("djmd") || tk.samples.empty()) continue;
+        const Sample& sm = tk.samples[0];
+        if (sm.size < 2 || sm.size > (16u << 20) || !src.readVec(sm.offset, sm.size, buf)) continue;
+        // dvtm_library.proto's ColorMode: 2 D-Log, 19 D-Log M (22 D-Log2, 9 HLG).
+        const int mode = dji_color_mode(buf.data(), buf.size(), out.camera);
+        out.log = mode == 2 ? "dji-d-log" : mode == 19 ? "dji-d-log-m" : "";
+        return out;
+    }
+
+    Box gpmf;
+    if (find_box(mv.udta.data(), mv.udta.size(), fourcc("GPMF"), gpmf)) {
+        // The one GP-Log LUT GoPro publishes as a technical transform is the
+        // MAX 2's, so only a 360 capture is matched to it.
+        if (gpmf_protune_color(gpmf.payload, gpmf.payload_size) == "LOG" &&
+            !mv.projection.name.empty()) {
+            out.log = "gp-log";
+            out.camera = mv.projection.name;
+        }
+        return out;
+    }
+
+    // Panasonic's Semi-Pro XML, the value of a QuickTime key of that name.
+    const std::string keys(mv.moov_meta.begin(), mv.moov_meta.end());
+    if (keys.find("com.panasonic.Semi-Pro.metadata.xml") != std::string::npos &&
+        keys.find("<CaptureGamma>V-Log</CaptureGamma>") != std::string::npos)
+        out.log = "v-log";
+    return out;
 }
 
 // PanoDewarpParams entries 3 and 4 (native_refine_far slave, master); the

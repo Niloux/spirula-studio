@@ -3,6 +3,7 @@
 #include "dense/Artifact.h"
 #include "i18n/catalog/Dense.h"
 
+#include "app/CubeLut.h"
 #include "app/FrameMask.h"
 #include "app/gui/ColmapRunner.h"
 #include "app/gui/SfmRunner.h"
@@ -216,11 +217,18 @@ void add_rigs(StepFields& f, const PrepJob& p) {
                 rig.second && rig.first.size() == 2 ? "dual-fisheye" : "free");
 }
 
-void add_sequences(StepFields& f, const PrepJob& p, bool use_sequence) {
-    if (!use_sequence) return;
+void add_sequences(StepFields& f, const PrepJob& p) {
     for (const PrepInput& in : p.inputs)
         for (const std::vector<std::string>& members : input_sequences(p, in))
             add(f, "sequence", joined(members), "on");
+}
+
+// Only what is switched off, so a run from before the switches compares equal.
+void add_sensors(StepFields& f, const PrepJob& p) {
+    for (const PrepInput& in : p.inputs) {
+        if (!in.use_imu) add(f, in.is_video ? "imu" : "attitude", scope_of(in.subdir), "off");
+        if (!in.use_gps) add(f, "gps", scope_of(in.subdir), "off");
+    }
 }
 
 std::string image_dir_field(const PrepJob& p) {
@@ -249,11 +257,12 @@ ModelPart field_part(const std::string& key) {
         "lens",        "focal",        "camera_mode", "data_type", "matcher",
         "pairs",       "overlap",      "loop_closure", "prefilter_sequential",
         "focal_px",    "distortion",   "sequence",    "rig",        "scan_views",
+        "imu",         "gps",
     };
     static const char* const mapping[] = {
         "mapper",         "distortion_refine", "final_per_image_intrinsics",
         "final_free_rig", "metric_gps",        "sensor_gauge",
-        "exif_attitude",
+        "exif_attitude",  "attitude",
     };
     for (const char* k : matching)
         if (key == k) return ModelPart::Matching;
@@ -598,6 +607,9 @@ StepFields frames_fields(const PrepJob& job) {
         const bool every = every_frame(job, in);
         rate = rate || !every;
         add(f, "fps", scope, every ? "every" : num(input_fps(job, in)));
+        // The colours are baked into the frames, so another LUT is other frames.
+        if (const std::string lut = input_lut(job, in); !lut.empty())
+            add(f, "lut", scope, app::is_builtin_lut(lut) ? lut : norm_path(lut));
         multi = multi || (!in.pano360.valid() && in.video_tracks >= 2);
         pano = pano || in.pano360.valid();
     }
@@ -697,7 +709,8 @@ StepFields model_fields(const SfmJob& job) {
     add(f, "point_color", "", job.point_color_in_image_space ? "image" : "srgb");
     if (!job.extra_args.empty()) add(f, "extra_args", "", job.extra_args);
     add_rigs(f, p);
-    add_sequences(f, p, job.use_sequence);
+    add_sequences(f, p);
+    add_sensors(f, p);
     add(f, "masks_for_features", "", onoff(masks_reach_features(p, job.mask_features)));
     add(f, "feature_only_masks", "",
         onoff(p.mask_enable && !p.mask_feature_prompt.empty()));
@@ -767,6 +780,22 @@ void verify_dense_reuse(DatasetPlan& plan, const std::string& dataset, const std
     if (!spirula::dense::artifact_inputs_verified(dataset,check)) {
         step.act = Act::Redo; step.why = Why::Stale; step.ask = false;
     }
+}
+
+// A record from before pairing followed the surface holds a preset's old neighbour and
+// reference counts; read through the same migration as saved settings, its cloud stays current.
+StepFields migrated_dense_record(StepFields fields) {
+    spirula::dense::DenseConfig config;
+    for (const auto& field : fields)
+        try { spirula::dense::assign_config_field(config, field.key, json_parse(field.value)); }
+        catch (const std::exception&) {}
+    if (!config.migrate_pairing()) return fields;
+    auto value = [](int number) { JsonWriter writer; json_write(writer, json_parse(json_field::emit(number))); return writer.str(); };
+    for (auto& field : fields) {
+        if (field.key == "neighbors") field.value = value(config.pairs.neighbors);
+        if (field.key == "reference_coverage") field.value = value(config.pairs.reference_coverage);
+    }
+    return fields;
 }
 
 StepFields dense_fields(const DenseJob& job) {
@@ -999,7 +1028,7 @@ DatasetPlan plan_dataset(const PlanJob& job, const WorkspaceState& ws,
     else if (req.redo_dense || dc.rebuild) set(dense, Act::Redo, Why::Requested);
     else if (!rd.present) set(dense, Act::Run, Why::Unrecorded);
     else if (rd.frames_id != rf.id || rd.model_id != rr.id || (dense_masks && rd.masks_id != rm.id)) set(dense, Act::Redo, Why::Stale);
-    else compare(dense, rd, diff(rd.fields, dense_fields(job.dense)));
+    else compare(dense, rd, diff(migrated_dense_record(rd.fields), dense_fields(job.dense)));
 
     StepPlan& g = p[Step::Geometry];
     if (fixed(Step::Geometry)) {
@@ -1075,30 +1104,6 @@ void restore_record_inputs(const DatasetRecord& rec, PrepJob& job,
         for (size_t i = 0; same && i < rows.size(); i++) same = was.rows[i].path == rows[i].path;
         return same;
     };
-    if (same_rows(lenses)) {
-        for (size_t i = 0; i < rows.size(); i++) {
-            PrepInput& in = rows[i];
-            const PrepInput& r = lenses.rows[i];
-            in.camera_model = r.camera_model;
-            in.focal_factor = r.focal_factor;
-            in.rig = r.rig;
-            in.rig_dual_fisheye = r.rig_dual_fisheye;
-            in.sequential = r.sequential;
-            for (SubCamera& sc : in.subcameras)
-                for (const SubCamera& o : r.subcameras)
-                    if (o.rel == sc.rel) sc = o;
-        }
-        if (same_rows(rates))
-            for (size_t i = 0; i < rows.size(); i++) rows[i].fps = rates.rows[i].fps;
-        if (same_rows(clicks)) job.mask_clicks = clicks.clicks;
-        if (!rows.empty()) camera_model = rows[0].camera_model;
-        return;
-    }
-    if (rows.size() != 1 || !frames_in_dataset(job)) return;
-
-    std::map<std::string, std::string> lens, focal;
-    std::vector<std::pair<std::vector<std::string>, std::string>> rigs;
-    std::vector<std::vector<std::string>> sequences;
     auto split = [](const std::string& list) {
         std::vector<std::string> out;
         size_t at = 0;
@@ -1109,6 +1114,48 @@ void restore_record_inputs(const DatasetRecord& rec, PrepJob& job,
         }
         return out;
     };
+    // A video went in order to every run before its switch existed; such a
+    // record says so only as a sequence under the video's folder.
+    auto ran_in_order = [&](const PrepInput& in) {
+        for (const StepField& f : rec.step(Step::Model).fields) {
+            if (f.key != "sequence") continue;
+            bool mine = true;
+            for (const std::string& m : split(f.scope))
+                mine = mine && (in.subdir.empty() || m == in.subdir ||
+                                m.rfind(in.subdir + "/", 0) == 0);
+            if (mine) return true;
+        }
+        return false;
+    };
+    if (same_rows(lenses)) {
+        for (size_t i = 0; i < rows.size(); i++) {
+            PrepInput& in = rows[i];
+            const PrepInput& r = lenses.rows[i];
+            in.camera_model = r.camera_model;
+            in.focal_factor = r.focal_factor;
+            in.rig = r.rig;
+            in.rig_dual_fisheye = r.rig_dual_fisheye;
+            in.sequential = r.sequential || (in.is_video && ran_in_order(in));
+            in.use_imu = r.use_imu;
+            in.use_gps = r.use_gps;
+            for (SubCamera& sc : in.subcameras)
+                for (const SubCamera& o : r.subcameras)
+                    if (o.rel == sc.rel) sc = o;
+        }
+        if (same_rows(rates))
+            for (size_t i = 0; i < rows.size(); i++) {
+                rows[i].fps = rates.rows[i].fps;
+                rows[i].lut = rates.rows[i].lut;
+            }
+        if (same_rows(clicks)) job.mask_clicks = clicks.clicks;
+        if (!rows.empty()) camera_model = rows[0].camera_model;
+        return;
+    }
+    if (rows.size() != 1 || !frames_in_dataset(job)) return;
+
+    std::map<std::string, std::string> lens, focal;
+    std::vector<std::pair<std::vector<std::string>, std::string>> rigs;
+    std::vector<std::vector<std::string>> sequences;
     for (const StepField& f : rec.step(Step::Model).fields) {
         if (f.key == "lens") lens[f.scope] = f.value;
         else if (f.key == "focal") focal[f.scope] = f.value;
