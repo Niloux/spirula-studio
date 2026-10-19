@@ -555,7 +555,12 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
     _ensure_optim_state(cfg.sh_optim_bits, cfg.sh_value_bits,
                         cfg.non_sh_optim_bits, cfg.use_per_splat_bias_correction);
 
-    int64_t N = engine().cur_num_splats;
+    const int64_t N = engine().cur_num_splats;
+    // Optimizer launchers infer a row's stride from numel divided by live N.
+    auto live_rows = [N](TorchTensorView rows) {
+        std::get<2>(rows)[0] = N;
+        return rows;
+    };
 
     // Per-splat bias correction: increment all steps by 1 before use
     DeviceVector<int32_t> per_splat_steps;
@@ -564,10 +569,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         per_splat_steps = engine().optim.bias_correction_steps;
     }
 
-    // Sub-batched training: grad_scale = 1/B and zero_grad_in_optim = true
-    // are stashed by engine_train_step's sub-batch dispatcher. When the
-    // dispatcher isn't active (single-batch training) these stay at the
-    // defaults (1.0f, false) and the kernels behave exactly as before.
+    // Sub-batches accumulate gradients before this single optimizer step.
     const float grad_scale = engine().optim.grad_scale;
     const bool  zero_grad  = engine().optim.zero_grad_in_optim;
 
@@ -579,10 +581,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
     color_trust.features_dc = (const float*)engine().world.features_dc.data_ptr();
     color_trust.opacities   = engine().world.opacities.data_ptr();
 
-    // Non-SH Adam-state quant bundle. Same struct as FPBO consumes; when
-    // enabled, the geometry kernel reads/writes the 5 non-SH attrs (means,
-    // quats, scales, opacities, features_dc) through the codec instead of
-    // the fp32 g1_*/g2_* DeviceVectors (which are freed in this mode).
+    // Quantized non-SH state replaces the dense moment buffers.
     NonShQuantState non_sh_optim;
     if (cfg.non_sh_optim_bits == 16
         && engine().optim.means_quant_state_fpbo.initialized()) {
@@ -599,12 +598,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         non_sh_optim.features_dc_bounds = engine().optim.features_dc_quant_state_fpbo.bounds_ptr();
     }
 
-    // Densification world-grad score output. Allocated (pool-backed) only
-    // when the score blend is enabled; a null buffer makes the kernel skip
-    // the per-splat store. Must be written here (not read from grad.means at
-    // densify time): the geometry kernel consumes the batch-accumulated mean
-    // gradient this step and zeroes it as a fused side effect in split-batch
-    // mode.
+    // Capture the score before the geometry optimizer consumes and clears gradients.
     DeviceVector<float> densify_score;
     if (cfg.write_densify_world_grad_score) {
         engine().fwd.world_grad_score.resize(
@@ -614,10 +608,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         engine().fwd.world_grad_score = DeviceVector<float>();
     }
 
-    // Block-wise quantized gradient input (non-FPBO grad-quant path). Populated
-    // per attribute from engine().grad.*_q; a null *_packed makes the geometry
-    // kernel read the fp32 v_* buffer for that attribute (3dgut means/quats/
-    // scales, or grad-quant off).
+    // Null quantized inputs select the dense gradient buffers.
     GradQuantBuffers grad_q;
     {
         auto& g = engine().grad;
@@ -657,20 +648,17 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         grad_scale, zero_grad
     );
 
-    // DC color update path. When non-SH quant is on the geometry kernel
-    // already updated features_dc through the codec; skip the separate
-    // launch. Otherwise: trust-region Adam (linear/sRGB color space) or
-    // plain fused Adam, mirroring the previous behavior.
+    // Quantized non-SH state updates DC inside the geometry kernel.
     if (!non_sh_optim.enabled) {
         if (cfg.use_color_trust_region) {
             const int s1 = step + 1;
             const float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-15f;
             (cfg.color_is_linear ? fused_adamtr_linear_rgb_optim : fused_adamtr_rgb_optim)(
-                _dv_tv(engine().world.features_dc),
-                _dv_tv(engine().grad.features_dc),
-                _dv_tv(engine().optim.g1_features_dc),
-                _dv_tv(engine().optim.g2_features_dc),
-                _dv_tv(engine().world.opacities),
+                live_rows(_dv_tv(engine().world.features_dc)),
+                live_rows(_dv_tv(engine().grad.features_dc)),
+                live_rows(_dv_tv(engine().optim.g1_features_dc)),
+                live_rows(_dv_tv(engine().optim.g2_features_dc)),
+                live_rows(_dv_tv(engine().world.opacities)),
                 cfg.lr_features_dc,
                 beta1, beta2, eps, cfg.eps_tr,
                 cfg.dc_reg_weight, cfg.sh_reg_weight, s1,
@@ -678,10 +666,10 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
             );
         } else {
             fused_adam_step(N,
-                DeviceTensorFloatND(engine().world.features_dc),
-                DeviceTensorFloatND(engine().grad.features_dc),
-                DeviceTensorFloatND(engine().optim.g1_features_dc),
-                DeviceTensorFloatND(engine().optim.g2_features_dc),
+                tv_to_fnd(live_rows(_dv_tv(engine().world.features_dc))),
+                tv_to_fnd(live_rows(_dv_tv(engine().grad.features_dc))),
+                tv_to_fnd(live_rows(_dv_tv(engine().optim.g1_features_dc))),
+                tv_to_fnd(live_rows(_dv_tv(engine().optim.g2_features_dc))),
                 cfg.lr_features_dc, step + 1, per_splat_steps,
                 // fused_adam_step divides l2_reg by the parameter count;
                 // FPBO applies 2*dc_reg/3 per splat, so pre-multiply by N.
@@ -696,21 +684,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         sb.lr = cfg.lr_features_sb;
     }
 
-    // SH update: pick the right kernel based on (quant value, quant optim,
-    // trust region). FPBO is handled by engine_fused_proj_bwd_optim_step
-    // above; everything below is the non-FPBO path.
-    //
-    //   (value-quant on  + optim-quant on)  -> doubly-quantized kernel
-    //   (value-quant off + optim-quant on)  -> singly-quantized (optim) kernel
-    //   (value-quant off + optim-quant off + TR)  -> TR Adam (fp32)
-    //   (value-quant off + optim-quant off)  -> plain fused Adam (fp32)
-    //
-    // Value-quant + optim-fp32 is rejected at _ensure_optim_state.
-    // SH-quant + TR is not supported (TR kernels need fp32 g1/g2), so the
-    // doubly-quant and singly-quant paths ignore use_color_trust_region.
-    // Block-wise quantized SH grad (non-FPBO grad-quant path). Null keeps the
-    // fp32 grad read; when set, the doubly-quantized kernel decodes SH grad
-    // from the 8-bit codec (per-splat-block bound) instead of dense features_sh.
+    // The quantized gradient codec uses per-splat bounds, including reserved rows.
     const uint8_t* sh_grad_q_packed = nullptr;
     const float2*  sh_grad_q_bounds = nullptr;
     if (engine().grad.quantize_grad && engine().grad.features_sh_q.initialized()) {
@@ -724,7 +698,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         fused_adam_step_quantized_value(
             N,
             (int64_t)N * (int64_t)engine().num_sh * 3LL,
-            DeviceTensorFloatND(engine().grad.features_sh),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().grad.features_sh))),
             sh_grad_q_packed, sh_grad_q_bounds,
             engine().optim.sh_quant_state.packed_ptr(),
             engine().optim.sh_quant_state.bounds_ptr(),
@@ -740,7 +714,7 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         fused_adam_step_quantized_value(
             N,
             (int64_t)N * (int64_t)engine().num_sh * 3LL,
-            DeviceTensorFloatND(engine().grad.features_sh),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().grad.features_sh))),
             sh_grad_q_packed, sh_grad_q_bounds,
             engine().optim.sh_quant_state.packed_ptr(),
             engine().optim.sh_quant_state.bounds_ptr(),
@@ -755,8 +729,8 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         // SH-quant + TR is not supported by fused_adamtr_*_sh_optim (those
         // kernels need fp32 g1/g2). Fall back to the plain quantized kernel.
         fused_adam_step_quantized(N,
-            DeviceTensorFloatND(engine().world.features_sh),
-            DeviceTensorFloatND(engine().grad.features_sh),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().world.features_sh))),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().grad.features_sh))),
             engine().optim.sh_quant_state.packed_ptr(),
             engine().optim.sh_quant_state.bounds_ptr(),
             cfg.lr_features_sh, step + 1, per_splat_steps,
@@ -767,22 +741,22 @@ void engine_optim_step(int step, const OptimConfig& cfg) {
         const int s1 = step + 1;
         const float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-15f;
         (cfg.color_is_linear ? fused_adamtr_linear_rgb_sh_optim : fused_adamtr_rgb_sh_optim)(
-            _dt2d_tv(engine().world.features_sh),
-            _dt2d_tv(engine().grad.features_sh),
-            _dt2d_tv(engine().optim.g1_features_sh),
-            _dt2d_tv(engine().optim.g2_features_sh),
-            _dv_tv(engine().world.features_dc),
-            _dv_tv(engine().world.opacities),
+            live_rows(_dt2d_tv(engine().world.features_sh)),
+            live_rows(_dt2d_tv(engine().grad.features_sh)),
+            live_rows(_dt2d_tv(engine().optim.g1_features_sh)),
+            live_rows(_dt2d_tv(engine().optim.g2_features_sh)),
+            live_rows(_dv_tv(engine().world.features_dc)),
+            live_rows(_dv_tv(engine().world.opacities)),
             cfg.lr_features_sh,
             beta1, beta2, eps, cfg.eps_tr, cfg.sh_reg_weight, s1, sb,
             grad_scale, zero_grad
         );
     } else {
         fused_adam_step(N,
-            DeviceTensorFloatND(engine().world.features_sh),
-            DeviceTensorFloatND(engine().grad.features_sh),
-            DeviceTensorFloatND(engine().optim.g1_features_sh),
-            DeviceTensorFloatND(engine().optim.g2_features_sh),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().world.features_sh))),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().grad.features_sh))),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().optim.g1_features_sh))),
+            tv_to_fnd(live_rows(_dt2d_tv(engine().optim.g2_features_sh))),
             cfg.lr_features_sh, step + 1, per_splat_steps,
             cfg.sh_reg_weight, 0.0f, sb,
             grad_scale, zero_grad);

@@ -36,6 +36,10 @@ all-zero reference depth must give zero depth loss and gradients, while valid
 depth must retain finite supervision. It covers masks, multiple scales and
 3-million-pixel frames.
 
+`optim_active_rows` exercises the engine optimizer with fewer live splats than
+reserved rows. Dense, quantized-state and trust-region color updates must leave
+the reserved rows untouched; Vulkan also covers spherical-beta rows.
+
 **The same source builds under both backends.** Each file only touches
 `backend::`, the generated launch declarations, and `Tensor.h`. The workflow
 is dump-then-compare:
