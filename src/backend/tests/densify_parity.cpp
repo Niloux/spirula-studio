@@ -329,10 +329,10 @@ int main(int argc, char** argv) {
         std::vector<int32_t> steps(CAP);
         for (auto& v : steps) v = 1 + (int32_t)(rng() % 40);
         m.bias_steps = upload(steps);
-        // renders 0..99 | unrendered 0..59, all under the stale threshold
+        // Nonzero counters let the stale-relocation check identify resets.
         std::vector<int32_t> visit(CAP);
         for (auto& v : visit)
-            v = (int32_t)((rng() % 100u) | ((rng() % 60u) << 16));
+            v = (int32_t)((1u + rng() % 100u) | ((rng() % 60u) << 16));
         m.visit = (uint32_t*)upload(visit);
         return m;
     };
@@ -415,9 +415,11 @@ int main(int argc, char** argv) {
         backend::device_synchronize();
     };
 
+    bool addition_count_ok = true;
     auto call_add_las = [&](Model& m, int64_t num_add, uint32_t seed,
-                            float* max_weight = nullptr) {
-        add_splats_with_long_axis_split_tensor(
+                            float* max_weight = nullptr, int64_t expected_add = -1) {
+        if (expected_add < 0) expected_add = num_add;
+        const int64_t actual_add = add_splats_with_long_axis_split_tensor(
             N, num_add, /*split_opacity_k=*/0.6f,
             dv<float3>(m.means, CAP), dv<float4>(m.quats, CAP),
             dv<float3>(m.scales, CAP), dv<float>(m.opacs, CAP),
@@ -450,6 +452,11 @@ int main(int argc, char** argv) {
             m.sh_value_bits, m.bounds_per_splat, (int)m.num_sh_buffer, m.nq,
             seed);
         backend::device_synchronize();
+        const bool ok = actual_add == expected_add;
+        addition_count_ok &= ok;
+        std::printf("growth count: requested %lld, actual %lld, expected %lld: %s\n",
+                    (long long)num_add, (long long)actual_add,
+                    (long long)expected_add, ok ? "ok" : "FAILED");
     };
 
     auto call_relocate_mcmc = [&](Model& m, float min_opacity,
@@ -589,6 +596,38 @@ int main(int argc, char** argv) {
             inherit_ok = false;
         }
     };
+
+    {
+        Model m = build_model(32, 32, false, false, 15, 15, -1, -1, -1);
+        backend::memset_sync(m.accum, 0, 2 * CAP * sizeof(float));
+        std::vector<float> before(3 * CAP), after(3 * CAP);
+        backend::memcpy_sync(before.data(), m.means, before.size() * sizeof(float),
+                             MemcpyKind::DeviceToHost);
+        call_add_las(m, 7, 173u, nullptr, 0);
+        backend::memcpy_sync(after.data(), m.means, after.size() * sizeof(float),
+                             MemcpyKind::DeviceToHost);
+        const bool unchanged = before == after;
+        addition_count_ok &= unchanged;
+        if (!unchanged) std::printf("growth count: empty candidates changed means\n");
+    }
+    {
+        Model m = build_model(32, 32, false, false, 15, 15, -1, -1, -1);
+        std::vector<float> score(2 * CAP, 0.0f);
+        score[2 * 17] = 1.0f;
+        backend::memcpy_sync(m.accum, score.data(), score.size() * sizeof(float),
+                             MemcpyKind::HostToDevice);
+        set_visit(m, 17, 0u, 0u);
+        std::vector<float> before(3 * CAP), after(3 * CAP);
+        backend::memcpy_sync(before.data(), m.means, before.size() * sizeof(float),
+                             MemcpyKind::DeviceToHost);
+        call_add_las(m, 7, 174u, nullptr, 1);
+        backend::memcpy_sync(after.data(), m.means, after.size() * sizeof(float),
+                             MemcpyKind::DeviceToHost);
+        const bool untouched = std::equal(before.begin() + 3 * (N + 1), before.end(),
+                                          after.begin() + 3 * (N + 1));
+        addition_count_ok &= untouched;
+        if (!untouched) std::printf("growth count: unused reserved means changed\n");
+    }
 
     // relocate (long-axis split): exactly one relocating splat per config
     {
@@ -845,7 +884,7 @@ int main(int argc, char** argv) {
         std::printf("densify_parity: dumped %lld + %lld floats + %lld codes "
                     "to %s\n",
                     (long long)nf, (long long)nl, (long long)nc, argv[2]);
-        return revived_ok && inherit_ok ? 0 : 1;
+        return revived_ok && inherit_ok && addition_count_ok ? 0 : 1;
     }
 
     // Diagnostics: DENSIFY_DUMP_GOT=<path> writes this run's outputs in the
@@ -931,7 +970,7 @@ int main(int argc, char** argv) {
         lmax, (long long)lviol, 100.0 * lfrac, (long long)nc,
         (long long)max_c, (long long)cviol, 100.0 * cfrac);
     bool pass = ffrac <= 1e-3 && lfrac <= 2e-2 && cfrac <= 2e-2 && revived_ok &&
-                inherit_ok;
+                inherit_ok && addition_count_ok;
     std::printf(pass ? "densify_parity: PASSED\n"
                      : "densify_parity: FAILED\n");
     return pass ? 0 : 1;

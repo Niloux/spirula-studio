@@ -45,6 +45,11 @@ bounds with active states. Host decoding covers 4/8/16-bit state; GPU updates
 cover 4/8-bit state. Zero variance must not move a parameter, while nonzero
 variance must retain its momentum update.
 
+`densify_parity` also checks actual growth counts with empty, partial and full
+candidate sets. Empty sets leave the model unchanged, and partial sets leave
+unused reserved rows untouched. Positive weights remain eligible regardless
+of the opacity-gradient visit counter.
+
 **The same source builds under both backends.** Each file only touches
 `backend::`, the generated launch declarations, and `Tensor.h`. The workflow
 is dump-then-compare:

@@ -809,7 +809,7 @@ int64_t relocate_splats_with_long_axis_split_tensor(
     return num_relocate;
 }
 
-void add_splats_with_long_axis_split_tensor(
+int64_t add_splats_with_long_axis_split_tensor(
     int64_t cur_num_splats,
     int64_t num_new_splats,
     float split_opacity_k,
@@ -833,14 +833,18 @@ void add_splats_with_long_axis_split_tensor(
     NonShQuantState non_sh,
     uint32_t seed
 ) {
-    if (num_new_splats == 0 || cur_num_splats <= 0) return;
+    num_new_splats = std::min(num_new_splats, cur_num_splats);
+    if (num_new_splats <= 0) return 0;
 
+    uint32_t num_eligible = 0;
     const int32_t* split_indices = wswr_sample(
         cur_num_splats,
         (const float*)(sample_weights.data_ptr()
                            ? sample_weights.data_ptr()
                            : densify_accum_buffer.data_ptr()),
-        nullptr, (uint32_t)num_new_splats, seed);
+        nullptr, (uint32_t)num_new_splats, seed, &num_eligible);
+    num_new_splats = std::min<int64_t>(num_new_splats, num_eligible);
+    if (num_new_splats == 0) return 0;
 
     launch_relocate_las(cur_num_splats, num_new_splats, split_opacity_k,
                         split_indices, nullptr, means, quats, scales, opacs,
@@ -856,6 +860,7 @@ void add_splats_with_long_axis_split_tensor(
                           nullptr, sh_value_packed.data_ptr(),
                           sh_value_bounds.data_ptr(), num_sh, num_sh_buffer,
                           sh_value_bits, sh_value_bounds_per_splat);
+    return num_new_splats;
 }
 
 void relocate_splats_mcmc_tensor(

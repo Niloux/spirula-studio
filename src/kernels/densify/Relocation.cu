@@ -348,7 +348,7 @@ int64_t relocate_splats_with_long_axis_split_tensor(
 }
 
 /*[AutoHeaderGeneratorExport]*/
-void add_splats_with_long_axis_split_tensor(
+int64_t add_splats_with_long_axis_split_tensor(
     int64_t cur_num_splats,
     int64_t num_new_splats,
     float split_opacity_k,
@@ -375,15 +375,19 @@ void add_splats_with_long_axis_split_tensor(
     NonShQuantState non_sh,
     uint32_t seed
 ) {
-    if (num_new_splats == 0)
-        return;
+    num_new_splats = std::min(num_new_splats, cur_num_splats);
+    if (num_new_splats <= 0)
+        return 0;
     int32_t* bias_correction_steps_ptr = bias_correction_steps.data_ptr();
 
     DeviceVector<float2> weights = sample_weights.data_ptr()
         ? sample_weights : densify_accum_buffer;
+    uint32_t num_eligible = 0;
     int32_t* split_indices = weighted_sample_without_replacement_internal(
         cur_num_splats, (float*)weights.data_ptr(),
-        weights.size() * 2, nullptr, num_new_splats, seed);
+        weights.size() * 2, nullptr, num_new_splats, seed, &num_eligible);
+    num_new_splats = std::min<int64_t>(num_new_splats, num_eligible);
+    if (num_new_splats == 0) return 0;
 
     #define _DENSIFY_LAS_ADD_LAUNCH(T, bnd_ptr, bps) \
         relocate_with_long_axis_split_kernel<T><<<_LAUNCH_ARGS_1D(num_new_splats, 256)>>>( \
@@ -413,6 +417,7 @@ void add_splats_with_long_axis_split_tensor(
         cur_num_splats, num_new_splats, split_indices, /*dst_indices=*/nullptr,
         sh_value_packed.data_ptr(), sh_value_bounds.data_ptr(),
         num_sh, num_sh_buffer, sh_value_bits, sh_value_bounds_per_splat);
+    return num_new_splats;
 }
 
 

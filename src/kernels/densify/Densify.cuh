@@ -218,7 +218,7 @@ int64_t relocate_splats_with_long_axis_split_tensor(
 );
 
 
-void add_splats_with_long_axis_split_tensor(
+int64_t add_splats_with_long_axis_split_tensor(
     int64_t cur_num_splats,
     int64_t num_new_splats,
     float split_opacity_k,

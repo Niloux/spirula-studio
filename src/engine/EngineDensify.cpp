@@ -418,7 +418,7 @@ int engine_densify_step(int step, int max_steps, const DensifyConfig& cfg) {
             }
             auto add_split = [&](int64_t n_cur, int n_new,
                                  DeviceVector<float2> weights, uint32_t seed) {
-                add_splats_with_long_axis_split_tensor(
+                return (int)add_splats_with_long_axis_split_tensor(
                     n_cur, n_new, split_opacity_k,
                     dv_means, dv_quats, dv_scales, dv_opacs, dv_features_dc, dv_features_sh,
                     dv_g1_means, dv_g1_quats, dv_g1_scales, dv_g1_opacs, dv_g1_features_dc, dv_g1_features_sh,
@@ -434,6 +434,8 @@ int engine_densify_step(int step, int max_steps, const DensifyConfig& cfg) {
                 );
             };
             auto& dv_score = engine().optim.densify_sample_score;
+            const int requested_add = num_added;
+            num_added = 0;
             if (n_oversize > 0) {
                 DeviceVector<float2> dv_over_w;
                 dv_over_w.resize(PoolSlot::EngDensifyOversizeWeight,
@@ -441,18 +443,16 @@ int engine_densify_step(int step, int max_steps, const DensifyConfig& cfg) {
                 densify_oversize_weight_tensor(
                     cur_num_splats, cfg.oversize_score_blend, dv_oversize,
                     dv_score.data_ptr() ? dv_score : dv_accum_buf, dv_over_w);
-                add_split(cur_num_splats, n_oversize, dv_over_w,
-                          2 * step + 1 + 0x5bf03635u);
-                // The split kernel carries accum_buf src -> dst but not the
-                // transformed score, so the second draw would rank the new
-                // splats on whatever those slots held in a past life.
+                num_added = add_split(cur_num_splats, n_oversize, dv_over_w,
+                                      2 * step + 1 + 0x5bf03635u);
+                // The split copies the accumulator, but new rows have no transformed score.
                 if (dv_score.data_ptr())
                     backend::memset_sync(dv_score.data_ptr() + cur_num_splats,
-                                         0, (size_t)n_oversize * sizeof(float2));
+                                         0, (size_t)num_added * sizeof(float2));
             }
-            if (num_added - n_oversize > 0)
-                add_split(cur_num_splats + n_oversize,
-                          num_added - n_oversize, dv_score, 2 * step + 1);
+            if (requested_add > num_added)
+                num_added += add_split(cur_num_splats + num_added,
+                                       requested_add - num_added, dv_score, 2 * step + 1);
         }
     } else if (do_densify) {
         // MCMC relocation
