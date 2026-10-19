@@ -444,7 +444,18 @@ void append_point_seeds(SeedSplats& s, const ColmapPoints3D& pts,
 
 namespace {
 
-int densify_loss_map_mode_int(const std::string& mode) {
+int perceptual_loss_int(const std::string& loss) {
+    if (loss == "ssim")     return (int)PerceptualLoss::Ssim;
+    if (loss == "s_cielab") return (int)PerceptualLoss::SCielab;
+    throw std::runtime_error("unknown perceptual_loss: " + loss);
+}
+
+// `auto` is the contrast-structure half of SSIM, or S-CIELAB when that is the
+// loss: either way the map comes from the kernel the loss runs anyway.
+int densify_loss_map_mode_int(const std::string& mode, const std::string& loss) {
+    if (mode == "auto")
+        return loss == "s_cielab" ? (int)DensifyLossMapMode::SCielab
+                                  : (int)DensifyLossMapMode::SsimContrastStruct;
     if (mode == "none")              return 0;
     if (mode == "loss_full")         return 1;
     if (mode == "ssim_full")         return 2;
@@ -456,7 +467,16 @@ int densify_loss_map_mode_int(const std::string& mode) {
     if (mode == "ssim_full_nms")       return 8;
     if (mode == "ssim_cs_nms")         return 9;
     if (mode == "ssim_structure_nms")  return 10;
+    if (mode == "s_cielab")            return 11;
+    if (mode == "s_cielab_nms")        return 12;
     throw std::runtime_error("unknown densify_loss_map_mode: " + mode);
+}
+
+DeadCriterion dead_criterion_enum(const std::string& c) {
+    if (c == "opacity")    return DeadCriterion::Opacity;
+    if (c == "max_weight") return DeadCriterion::MaxWeight;
+    if (c == "either")     return DeadCriterion::Either;
+    throw std::runtime_error("unknown dead_criterion: " + c);
 }
 
 int densify_accum_mode_int(const std::string& mode) {
@@ -523,9 +543,11 @@ EngineStepConfig build_step_config(const TrainConfig& c, const RunState& st, int
     // ---- loss ----------------------------------------------------------
     cfg.loss.weights = build_loss_weights(c, step);
     cfg.loss.w_ssim = c.ssim_lambda;
+    cfg.loss.perceptual_loss = perceptual_loss_int(c.perceptual_loss);
     cfg.loss.num_loss_scales = c.num_loss_scales + 1;
     cfg.loss.loss_scale_min_pixels = c.loss_scale_min_pixels;
-    int loss_map_mode = densify_loss_map_mode_int(c.densify_loss_map_mode);
+    int loss_map_mode =
+        densify_loss_map_mode_int(c.densify_loss_map_mode, c.perceptual_loss);
     // blend >= 1: world-grad score only, loss map has no consumer.
     if (c.densify_score_blend_world_grad >= 1.0f) loss_map_mode = 0;
     cfg.loss.loss_map_mode = loss_map_mode;
@@ -601,6 +623,8 @@ EngineStepConfig build_step_config(const TrainConfig& c, const RunState& st, int
     cfg.densify.refine_every                  = c.refine_every;
     cfg.densify.growth_factor                 = c.growth_factor;
     cfg.densify.min_opacity                   = c.min_opacity;
+    cfg.densify.dead_criterion = dead_criterion_enum(c.dead_criterion);
+    cfg.densify.max_weight_half_life = (float)std::max(c.max_batch_per_epoch, 1);
     cfg.densify.max_screen_size               = c.max_screen_size;
     cfg.densify.max_screen_size_clip_hardness = c.max_screen_size_clip_hardness;
     cfg.densify.clip_screen_size_at_refine    = c.max_screen_size_penalty > 0.0f;
@@ -692,14 +716,14 @@ EngineStepConfig build_step_config(const TrainConfig& c, const RunState& st, int
 
 // p_train = relative_scale * (p_dataset - center): the parser's shift and the
 // trainer's own rescale, which is every way the splats' frame differs from
-// the dataset's.
+// the dataset's. A dataset fitted to GPS adds where its own frame sits on Earth.
 void save_scene_transform_json(const ParsedDataset& ds, const TrainConfig& c,
                                const fs::path& out_dir) {
     SceneTransform T;
     T.scale = (double)c.relative_scale.value_or(1.0f);
     for (int i = 0; i < 3; i++) T.t[i] = -T.scale * ds.center[i];
     const std::string text =
-        scene_transform_json(T, ds.center_mode, ds.center.data());
+        scene_transform_json(T, ds.center_mode, ds.center.data(), ds.gauge_geo);
     const fs::path path = out_dir / "scene_transform.json";
     FILE* f = std::fopen(path.string().c_str(), "w");
     if (!f) throw std::runtime_error("cannot write " + path.string());
@@ -758,6 +782,8 @@ std::string train_config_unsupported(const TrainConfig& c) {
         return lfmt(lmsg::bad_mask_mode, {c.mask_mode});
     if (c.sb_lobes < 0 || c.sb_lobes > ColorBasis::kMaxSbLobes)
         return lfmt(lmsg::bad_sb_lobes, {ColorBasis::kMaxSbLobes});
+    if (c.dead_criterion != "opacity" && !c.use_revised_densification)
+        return lfmt(lmsg::dead_criterion_needs_revised, {c.dead_criterion});
 #ifndef SS_BACKEND_VULKAN
     if (c.sb_lobes > 0) return lmsg::sb_lobes_need_vulkan.get();
 #endif
@@ -1249,8 +1275,12 @@ void TrainerSession::setup_engine() {
         }
         if (!has_mask) ds.mask_filenames.clear();
         double share = 0;
+        Sim3 to_region;
+        to_region.s = 1.0 / rs;
+        for (int r = 0; r < 3; r++) to_region.t[r] = ds.center[(size_t)r];
         ds.mask_filenames = write_region_masks(ds, xyz.data(), (int64_t)inside.size(), inside.data(),
-                                               (out_dir / "roi_masks").string(), cfg.flip_mask, &share);
+                                               (out_dir / "roi_masks").string(), cfg.flip_mask, &share,
+                                               roi.get(), to_region);
         has_mask = true;
         char pct[16];
         std::snprintf(pct, sizeof pct, "%.0f", 100.0 * share);

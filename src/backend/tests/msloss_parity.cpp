@@ -97,6 +97,7 @@ struct MsCfg {
     float quantile;
     float nms_falloff;    // *_nms modes only; 0 = the hard canny suppression
     float sat;            // blown-highlight cutoff; <= 0 disables it
+    int loss = 0;         // PerceptualLoss
     bool mixed = false;
 };
 
@@ -233,7 +234,7 @@ void run_ms_cfg(Rng& r, const MsCfg& c) {
                 ? std::make_tuple((uint64_t)ref_alpha, (uint32_t)1,
                                   std::vector<int64_t>{c.B, Ha, Wa, 1})
                 : ttv_null(),
-            /*has_mask=*/c.with_alpha, weights, w_ssim, c.sat,
+            /*has_mask=*/c.with_alpha, weights, w_ssim, c.loss, c.sat,
             ttv(v_losses, {(int)LossIndex::length}), needs, num_train,
             cams ? ttv(cams, {c.B}) : ttv_null(),
             ttv(loss_map_out, {c.B, c.H, c.W, 1}), c.loss_map_mode,
@@ -280,6 +281,7 @@ void run_ms_cfg(Rng& r, const MsCfg& c) {
     g_loose.push_back(lv.median_normal_sup);
     g_loose.push_back(lv.median_render_normal_reg);
     g_loose.push_back(lv.ssim);
+    g_loose.push_back(lv.delta_e);
 
     (void)n_grads;
     std::printf("msloss_parity: cfg %-12s done\n", c.name);
@@ -403,11 +405,28 @@ int main(int argc, char** argv) {
         {"sat_only", 1, 48, 48, 1, 0, 0, 0, 0, 0, 0, false, false, false,
          (int)DensifyLossMapMode::SsimFull, 0.9f, 0.5f, 0.98f},
         {"mixed_full", 2, 64, 80, 3, 0, 0, 0, 0, 0, 0, true, true, false,
-         (int)DensifyLossMapMode::LossFull, 0.9f, 0.5f, -1.0f, true},
+         (int)DensifyLossMapMode::LossFull, 0.9f, 0.5f, -1.0f, 0, true},
         {"mixed_scaled", 1, 32, 32, 3, 64, 64, 16, 16, 64, 64, true, false, false,
-         (int)DensifyLossMapMode::SsimFull, 0.9f, 0.5f, -1.0f, true},
+         (int)DensifyLossMapMode::SsimFull, 0.9f, 0.5f, -1.0f, 0, true},
         {"mixed_edge", 1, 32, 32, 2, 0, 0, 0, 0, 0, 0, true, false, false,
-         (int)DensifyLossMapMode::RobustEdgeAware, 0.85f, 0.5f, -1.0f, true},
+         (int)DensifyLossMapMode::RobustEdgeAware, 0.85f, 0.5f, -1.0f, 0, true},
+        {"mixed_scielab", 2, 40, 48, 2, 0, 0, 0, 0, 0, 0, true, false, true,
+         (int)DensifyLossMapMode::SCielab, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SCielab, true},
+        // S-CIELAB as the trained term: its own map with a mask (the coverage
+        // pass) over two scales; LossFull with the clip test and no mask; and
+        // each family's map taken while the other one trains.
+        {"scielab", 2, 40, 48, 2, 0, 0, 0, 0, 0, 0, true, false, true,
+         (int)DensifyLossMapMode::SCielab, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SCielab},
+        {"scielab_lf", 1, 48, 48, 2, 0, 0, 0, 0, 0, 0, false, false, false,
+         (int)DensifyLossMapMode::LossFull, 0.9f, 0.5f, 0.98f,
+         (int)PerceptualLoss::SCielab},
+        {"scielab_xcs", 1, 37, 53, 1, 0, 0, 0, 0, 16, 16, true, false, true,
+         (int)DensifyLossMapMode::SsimContrastStruct, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SCielab},
+        {"ssim_xsc_nms", 1, 37, 53, 1, 0, 0, 0, 0, 0, 0, false, false, true,
+         (int)DensifyLossMapMode::SCielabNms, 0.9f, 0.25f, -1.0f},
     };
     for (const MsCfg& c : cfgs) run_ms_cfg(r, c);
     run_quantile(r);
