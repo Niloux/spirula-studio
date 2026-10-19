@@ -1344,9 +1344,11 @@ public:
     ) {
         float2 prim = decode_us(packed_ptr, idx, mm);
         float sqrt_g2 = inverse_sqrt_g2(prim.y);
+        float g2 = sqrt_g2 * sqrt_g2;
+        // A quantized u=0 residual must not become momentum amplified by 1/eps.
         return float2{
-            prim.x * (sqrt_g2 + kEps),   // g1 = u * (sqrt_g2 + eps)
-            sqrt_g2 * sqrt_g2             // g2 = sqrt_g2 * sqrt_g2
+            g2 == 0.0f ? 0.0f : prim.x * (sqrt_g2 + kEps),
+            g2
         };
     }
 

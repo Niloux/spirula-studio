@@ -40,6 +40,11 @@ depth must retain finite supervision. It covers masks, multiple scales and
 reserved rows. Dense, quantized-state and trust-region color updates must leave
 the reserved rows untouched; Vulkan also covers spherical-beta rows.
 
+`quantized_zero_momentum` checks mixed Adam blocks where zero variance shares
+bounds with active states. Host decoding covers 4/8/16-bit state; GPU updates
+cover 4/8-bit state. Zero variance must not move a parameter, while nonzero
+variance must retain its momentum update.
+
 **The same source builds under both backends.** Each file only touches
 `backend::`, the generated launch declarations, and `Tensor.h`. The workflow
 is dump-then-compare:

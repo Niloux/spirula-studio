@@ -158,7 +158,9 @@ float2 _qadam_us_of<let BITS : int>(uint2 q, float4 mm) {
 [ForceInline]
 float2 _qadam_g1g2_of(float2 prim) {
     float sqrt_g2 = kAdamEps * _oq_expm1(prim.y);
-    return float2(prim.x * (sqrt_g2 + kAdamEps), sqrt_g2 * sqrt_g2);
+    float g2 = sqrt_g2 * sqrt_g2;
+    float g1 = g2 == 0.0f ? 0.0f : prim.x * (sqrt_g2 + kAdamEps);
+    return float2(g1, g2);
 }
 
 [ForceInline]
