@@ -84,9 +84,9 @@ have no one colour to composite onto and keep the stored one.
 `segment_and_ignore` combines both in one grayscale mask, and `none` disables
 alpha and sidecar masks. With `auto` (the default), `load_masks` and
 `apply_loss_for_mask` retain their existing behavior: cut out when the only
-masks are image alpha or the seed is this dataset's `dense/roma.ply`; ignore
-otherwise. Explicit `mask_mode` overrides those legacy flags. `config.json`
-records the resolved mode. The dense panel and trainer share the same control.
+masks are image alpha; ignore otherwise. Explicit `mask_mode` overrides those
+legacy flags. `config.json` records the resolved mode. The dense panel and
+trainer share the same control.
 
 For `segment_and_ignore`, provide grayscale sidecar masks with these ranges
 (compatible with LichtFeld Studio):

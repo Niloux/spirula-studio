@@ -282,6 +282,7 @@ void run_ms_cfg(Rng& r, const MsCfg& c) {
     g_loose.push_back(lv.median_render_normal_reg);
     g_loose.push_back(lv.ssim);
     g_loose.push_back(lv.delta_e);
+    g_loose.push_back(lv.flip);
 
     (void)n_grads;
     std::printf("msloss_parity: cfg %-12s done\n", c.name);
@@ -345,12 +346,21 @@ void run_normalize_clip(Rng& r) {
         {true, 1.0f, 1.0f}, {false, 0.98f, 1.0f}, {true, 0.98f, 1.0f},
         {false, 1.0f, 1.0f}, {false, 1.0f, 0.5f}, {true, 0.98f, 2.0f},
     };
+    // The learned score's rendered map: zeros where nothing explains the
+    // error yet, so the ratio cap is exercised too.
+    std::vector<float> fit(h.size());
+    for (size_t i = 0; i < fit.size(); i++)
+        fit[i] = i % 13 == 0 ? 0.0f : 1e-3f * (float)(1 + (i * 7919) % 997);
+    float* d_fit = upload(fit);
     for (const auto& c : cases) {
-        float* d = upload(h);
-        normalize_clip_map_inplace_tensor(ttv(d, {B, H, W, 1}), c.norm, c.q,
-                                          c.p);
-        backend::device_synchronize();
-        readback_f(g_tight, d, B * N);
+        for (bool with_fit : {false, true}) {
+            float* d = upload(h);
+            normalize_clip_map_inplace_tensor(
+                ttv(d, {B, H, W, 1}), c.norm, c.q, c.p,
+                with_fit ? ttv(d_fit, {B, H, W, 1}) : TorchTensorView{});
+            backend::device_synchronize();
+            readback_f(g_tight, d, B * N);
+        }
     }
     std::printf("msloss_parity: cfg %-12s done\n", "norm_clip");
 }
@@ -427,6 +437,34 @@ int main(int argc, char** argv) {
          (int)PerceptualLoss::SCielab},
         {"ssim_xsc_nms", 1, 37, 53, 1, 0, 0, 0, 0, 0, 0, false, false, true,
          (int)DensifyLossMapMode::SCielabNms, 0.9f, 0.25f, -1.0f},
+        // FLIP likewise: its feature map (the auto default) with a mask over
+        // two scales, LossFull with the clip test, and the cross-family maps.
+        {"flip", 2, 40, 48, 2, 0, 0, 0, 0, 0, 0, true, false, true,
+         (int)DensifyLossMapMode::FlipFeature, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::Flip},
+        {"flip_lf", 1, 48, 48, 2, 0, 0, 0, 0, 0, 0, false, false, false,
+         (int)DensifyLossMapMode::LossFull, 0.9f, 0.5f, 0.98f,
+         (int)PerceptualLoss::Flip},
+        {"flip_xsc", 1, 37, 53, 1, 0, 0, 0, 0, 16, 16, true, false, true,
+         (int)DensifyLossMapMode::SCielab, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::Flip},
+        {"ssim_xfl_nms", 1, 37, 53, 1, 0, 0, 0, 0, 0, 0, false, false, true,
+         (int)DensifyLossMapMode::FlipNms, 0.9f, 0.25f, -1.0f},
+        {"sc_xff_nms", 1, 37, 53, 1, 0, 0, 0, 0, 16, 16, true, false, true,
+         (int)DensifyLossMapMode::FlipFeatureNms, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SCielab},
+        // Blur-tolerant SSIM: its cs map (the auto default) with a mask over
+        // three scales, where the blur shrinks per scale, and LossFull with
+        // the clip test and a smaller mask.
+        {"ssim_bt", 2, 40, 48, 3, 0, 0, 0, 0, 0, 0, true, false, true,
+         (int)DensifyLossMapMode::SsimContrastStruct, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SsimBlurTolerant},
+        {"ssim_bt_lf", 1, 37, 53, 2, 0, 0, 0, 0, 16, 16, true, false, false,
+         (int)DensifyLossMapMode::LossFull, 0.9f, 0.5f, 0.98f,
+         (int)PerceptualLoss::SsimBlurTolerant},
+        {"ssim_bt_str", 1, 32, 32, 1, 0, 0, 0, 0, 0, 0, false, false, true,
+         (int)DensifyLossMapMode::SsimStructure, 0.9f, 0.5f, -1.0f,
+         (int)PerceptualLoss::SsimBlurTolerant},
     };
     for (const MsCfg& c : cfgs) run_ms_cfg(r, c);
     run_quantile(r);

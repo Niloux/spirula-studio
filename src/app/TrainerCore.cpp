@@ -446,15 +446,18 @@ namespace {
 
 int perceptual_loss_int(const std::string& loss) {
     if (loss == "ssim")     return (int)PerceptualLoss::Ssim;
+    if (loss == "ssim_blur_tolerant") return (int)PerceptualLoss::SsimBlurTolerant;
     if (loss == "s_cielab") return (int)PerceptualLoss::SCielab;
+    if (loss == "flip")     return (int)PerceptualLoss::Flip;
     throw std::runtime_error("unknown perceptual_loss: " + loss);
 }
 
-// `auto` is the contrast-structure half of SSIM, or S-CIELAB when that is the
-// loss: either way the map comes from the kernel the loss runs anyway.
+// `auto` is the contrast-structure half of SSIM, S-CIELAB, or FLIP's feature
+// error, whichever the loss is: the map comes from the kernel it runs anyway.
 int densify_loss_map_mode_int(const std::string& mode, const std::string& loss) {
     if (mode == "auto")
         return loss == "s_cielab" ? (int)DensifyLossMapMode::SCielab
+             : loss == "flip"     ? (int)DensifyLossMapMode::FlipFeature
                                   : (int)DensifyLossMapMode::SsimContrastStruct;
     if (mode == "none")              return 0;
     if (mode == "loss_full")         return 1;
@@ -469,6 +472,10 @@ int densify_loss_map_mode_int(const std::string& mode, const std::string& loss) 
     if (mode == "ssim_structure_nms")  return 10;
     if (mode == "s_cielab")            return 11;
     if (mode == "s_cielab_nms")        return 12;
+    if (mode == "flip")                return 13;
+    if (mode == "flip_nms")            return 14;
+    if (mode == "flip_feature")        return 15;
+    if (mode == "flip_feature_nms")    return 16;
     throw std::runtime_error("unknown densify_loss_map_mode: " + mode);
 }
 
@@ -557,7 +564,9 @@ EngineStepConfig build_step_config(const TrainConfig& c, const RunState& st, int
     cfg.loss.loss_map_normalize = c.densify_loss_map_normalize;
     cfg.loss.loss_map_clip_quantile = c.densify_loss_map_clip_quantile;
     cfg.loss.loss_map_power = c.densify_loss_map_power;
-    cfg.loss.loss_map_accum_mode = densify_accum_mode_int(c.densify_accum_mode);
+    // The learned score's update needs the ratio map's weighted mean.
+    cfg.loss.loss_map_accum_mode = c.densify_learned_score
+        ? (int)DensifyAccumMode::Avg : densify_accum_mode_int(c.densify_accum_mode);
     cfg.loss.saturation_threshold = c.loss_saturation_threshold;
     cfg.loss.luminance_normalization = c.loss_luminance_normalization;
     cfg.loss.overexposure_reg_weight = c.overexposure_reg;
@@ -639,6 +648,9 @@ EngineStepConfig build_step_config(const TrainConfig& c, const RunState& st, int
     cfg.densify.score_power = c.densify_score_power;
     cfg.densify.score_clip_quantile = c.densify_score_clip_quantile;
     cfg.densify.final_score_power = c.densify_final_score_power;
+    cfg.densify.learned_score = c.densify_learned_score;
+    cfg.loss.learned_score = c.densify_learned_score && loss_map_mode != 0 &&
+        step < std::max(c.refine_stop_iter, c.num_iterations - c.refine_stop_num_iter);
     cfg.densify.oversize_split_fraction = c.densify_oversize_split_fraction;
     cfg.densify.oversize_score_blend = c.densify_oversize_score_blend;
     cfg.densify.las_split_opacity_k_init   = c.long_axis_split_opacity_k[0];
@@ -784,6 +796,11 @@ std::string train_config_unsupported(const TrainConfig& c) {
         return lfmt(lmsg::bad_sb_lobes, {ColorBasis::kMaxSbLobes});
     if (c.dead_criterion != "opacity" && !c.use_revised_densification)
         return lfmt(lmsg::dead_criterion_needs_revised, {c.dead_criterion});
+    if (c.densify_learned_score &&
+        (!c.use_revised_densification || c.densify_loss_map_mode == "none" ||
+         c.densify_score_blend_world_grad != 0.0f || !(c.densify_score_power > 0.0f) ||
+         !(c.densify_loss_map_power > 0.0f)))
+        return lmsg::learned_score_needs.get();
 #ifndef SS_BACKEND_VULKAN
     if (c.sb_lobes > 0) return lmsg::sb_lobes_need_vulkan.get();
 #endif
@@ -1034,9 +1051,8 @@ void TrainerSession::load_dataset() {
                                            : lmsg::alpha_masks_with_files,
                  {n, (long long)ds.num_cameras}));
     }
-    // Dense seeds and alpha cut-outs treat excluded pixels as empty space.
-    const bool default_segment = spirula::dense::is_dense_seed(cfg.data, cfg.seed_pointcloud) ||
-        (!alpha_images.empty() && ds.mask_filenames.empty());
+    // Alpha cut-outs treat excluded pixels as empty space.
+    const bool default_segment = !alpha_images.empty() && ds.mask_filenames.empty();
     const bool automatic_cut_out = cfg.mask_mode == "auto" &&
         !cfg.apply_loss_for_mask.has_value() && default_segment && cfg.load_masks;
     cfg.mask_mode = train_mask_mode(cfg, default_segment);
