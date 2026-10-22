@@ -648,7 +648,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
         }
         float values[6] = {gw.x,gw.y,gw.z,gd.x,gd.y,gd.z};
         for (int k=0;k<6;++k) {
-            float v = values[k];
+            float v = isfinite(values[k]) ? values[k] : 0.0f;
             warpSum(v,warp);
             if (warp.thread_rank()==0) atomicAdd(dist_coeffs_buffer.shutter.gradient+image_id*8+k,v);
         }

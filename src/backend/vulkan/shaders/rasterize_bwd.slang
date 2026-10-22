@@ -674,7 +674,7 @@ void _rb3_step(Raster3dgutBwdParams p, int pix_id, int splat_idx,
 [ForceInline]
 void _rb3_reduce_add(float* dst, float val, uint tid) {
     GroupMemoryBarrierWithGroupSync();
-    _rb_red[tid] = val;
+    _rb_red[tid] = _rb_finitef(val) ? val : 0.0f;
     GroupMemoryBarrierWithGroupSync();
     if (tid == 0) {
         float s = 0.0f;
