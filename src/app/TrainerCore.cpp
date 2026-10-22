@@ -6,6 +6,7 @@
 #include "core/Env.h"
 #include "core/SphericalBeta.h"
 #include "core/Tensor.h"
+#include "core/TrainingMask.h"
 #include "data/SceneTransform.h"
 #include "app/EvalMetrics.h"
 #include "checkpoint/Adapt.h"
@@ -2116,6 +2117,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         int64_t index = 0;
         int H = 0, W = 0, C = 0;
         std::vector<float> gt, pred;
+        std::vector<uint8_t> keep;            // H*W, empty without a mask
         int Hd = 0, Wd = 0;                   // GT depth, raw counts; empty without one
         std::vector<float> gt_depth, pred_depth;
     };
@@ -2176,18 +2178,31 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
     };
 
     auto score_view = [&](ViewJob& j) {
-        const int64_t view_px = (int64_t)j.H * j.W * j.C;
+        const int64_t npx = (int64_t)j.H * j.W;
         const float* g = j.gt.data();
+        const uint8_t* keep = j.keep.empty() ? nullptr : j.keep.data();
+        // Masked pixels take the GT's value, so SSIM's window and LPIPS, which
+        // cannot skip them, see no difference there.
+        auto paste_gt = [&](std::vector<float>& img) {
+            for (int64_t p = 0; keep && p < npx; p++)
+                if (!keep[p])
+                    std::copy_n(g + p * j.C, j.C, img.data() + p * j.C);
+        };
         thread_local std::vector<float> cc;   // reused across this worker's views
-        color_correct_into(j.pred.data(), g, (int64_t)j.H * j.W, j.C, cc);
+        auto correct = [&] {
+            paste_gt(j.pred);
+            color_correct_into(j.pred.data(), g, npx, j.C, cc, keep);
+            paste_gt(cc);
+        };
+        correct();
         ViewScore s;
         s.filled  = true;
-        s.l1      = image_l1(g, j.pred.data(), view_px);
-        s.psnr    = image_psnr(g, j.pred.data(), view_px);
-        s.ssim    = image_ssim(g, j.pred.data(), j.H, j.W, j.C);
-        s.cc_l1   = image_l1(g, cc.data(), view_px);
-        s.cc_psnr = image_psnr(g, cc.data(), view_px);
-        s.cc_ssim = image_ssim(g, cc.data(), j.H, j.W, j.C);
+        s.l1      = image_l1(g, j.pred.data(), npx, j.C, keep);
+        s.psnr    = image_psnr(g, j.pred.data(), npx, j.C, keep);
+        s.ssim    = image_ssim(g, j.pred.data(), j.H, j.W, j.C, keep);
+        s.cc_l1   = image_l1(g, cc.data(), npx, j.C, keep);
+        s.cc_psnr = image_psnr(g, cc.data(), npx, j.C, keep);
+        s.cc_ssim = image_ssim(g, cc.data(), j.H, j.W, j.C, keep);
         // At every measured GT pixel, against the render pixel holding its centre.
         if (!j.gt_depth.empty()) {
             std::vector<float> err;
@@ -2216,7 +2231,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
             // higher, the size of what LPIPS gets compared on. PNGs are unchanged.
             quantize_8bit(j.gt);
             quantize_8bit(j.pred);
-            color_correct_into(j.pred.data(), g, (int64_t)j.H * j.W, j.C, cc);
+            correct();
             try {
                 if (j.C != 3) throw std::runtime_error("LPIPS needs RGB views");
                 std::lock_guard<std::mutex> lk(lpips_mu);
@@ -2293,8 +2308,9 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
 
     for (int64_t i = 0; i < eds.num_cameras; i++) {
         if (stop_requested.load() || worker_failed.load()) break;
-        int64_t H = 0, W = 0, B = 0, Cc = 0, Hd = 0, Wd = 0;
+        int64_t H = 0, W = 0, B = 0, Cc = 0, Hd = 0, Wd = 0, Hm = 0, Wm = 0;
         std::vector<float> gt, render, gt_depth, render_depth;
+        std::vector<uint8_t> labels;
         {
             std::lock_guard<std::mutex> lk(engine_mutex);
             int n_view = engine_eval_forward(cfg.primitive, sh_deg, cfg.packed,
@@ -2312,6 +2328,14 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
                 TorchTensorView{0, 0, {}}, TorchTensorView{0, 0, {}});
             engine_copy_gt_rgb_to_host(
                 TorchTensorView{(uint64_t)(uintptr_t)gt.data(), 4, {B, H, W, Cc}});
+            const auto ashape = engine_get_gt_alpha_shape();
+            if (std::get<0>(ashape) == B) {
+                Hm = std::get<1>(ashape);
+                Wm = std::get<2>(ashape);
+                labels.resize((size_t)(B * Hm * Wm));
+                engine_copy_gt_alpha_to_host(
+                    TorchTensorView{(uint64_t)(uintptr_t)labels.data(), 1, {B, Hm, Wm, 1}});
+            }
             const auto dshape = eval_depths ? engine_get_gt_depth_shape()
                                             : std::tuple<int64_t, int64_t, int64_t, int64_t>{};
             if (std::get<0>(dshape) == B) {
@@ -2340,6 +2364,16 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
             job.pred.assign(render.begin() + (size_t)(v * view_px),
                             render.begin() + (size_t)((v + 1) * view_px));
             for (float& x : job.pred) x = std::min(std::max(x, 0.0f), 1.0f);
+            // The pixels the loss trains on; the mask keeps its own resolution.
+            if (!labels.empty()) {
+                job.keep.resize((size_t)(H * W));
+                const uint8_t* m = labels.data() + (size_t)(v * Hm * Wm);
+                for (int64_t y = 0; y < H; y++)
+                    for (int64_t x = 0; x < W; x++)
+                        job.keep[(size_t)(y * W + x)] =
+                            m[(size_t)((y * Hm / H) * Wm + x * Wm / W)] ==
+                            (uint8_t)TrainingMask::Keep;
+            }
             if (!gt_depth.empty()) {
                 job.Hd = (int)Hd; job.Wd = (int)Wd;
                 job.gt_depth.assign(gt_depth.begin() + (size_t)(v * Hd * Wd),

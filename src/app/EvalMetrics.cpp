@@ -53,31 +53,44 @@ double combine(const std::vector<double>& partials) {
 
 }  // namespace
 
-float image_l1(const float* a, const float* b, int64_t n) {
-    std::vector<double> part((size_t)max_threads(), 0.0);
-#pragma omp parallel
-    {
-        double s = 0.0;
-#pragma omp for schedule(static) nowait
-        for (int64_t i = 0; i < n; i++) s += std::abs((double)a[i] - (double)b[i]);
-        part[(size_t)this_thread()] = s;
-    }
-    return (float)(combine(part) / (double)std::max<int64_t>(n, 1));
-}
+namespace {
 
-float image_psnr(const float* a, const float* b, int64_t n) {
+// Mean over the kept pixels' channels of f(a - b).
+template <typename F>
+double kept_mean(const float* a, const float* b, int64_t num_pixels, int C,
+                 const uint8_t* keep, F f) {
     std::vector<double> part((size_t)max_threads(), 0.0);
+    std::vector<int64_t> kept((size_t)max_threads(), 0);
 #pragma omp parallel
     {
         double s = 0.0;
+        int64_t k = 0;
 #pragma omp for schedule(static) nowait
-        for (int64_t i = 0; i < n; i++) {
-            double d = (double)a[i] - (double)b[i];
-            s += d * d;
+        for (int64_t p = 0; p < num_pixels; p++) {
+            if (keep && !keep[p]) continue;
+            for (int c = 0; c < C; c++)
+                s += f((double)a[p * C + c] - (double)b[p * C + c]);
+            k += C;
         }
         part[(size_t)this_thread()] = s;
+        kept[(size_t)this_thread()] = k;
     }
-    double mse = combine(part) / (double)std::max<int64_t>(n, 1);
+    int64_t n = 0;
+    for (int64_t k : kept) n += k;
+    return combine(part) / (double)std::max<int64_t>(n, 1);
+}
+
+}  // namespace
+
+float image_l1(const float* a, const float* b, int64_t num_pixels, int C,
+               const uint8_t* keep) {
+    return (float)kept_mean(a, b, num_pixels, C, keep,
+                            [](double d) { return std::abs(d); });
+}
+
+float image_psnr(const float* a, const float* b, int64_t num_pixels, int C,
+                 const uint8_t* keep) {
+    double mse = kept_mean(a, b, num_pixels, C, keep, [](double d) { return d * d; });
     if (mse <= 0.0) return std::numeric_limits<float>::infinity();
     return (float)(10.0 * std::log10(1.0 / mse));   // data_range = 1
 }
@@ -164,7 +177,8 @@ void conv_reflect(const double* src, int H, int W, const double* g,
 
 }  // namespace
 
-float image_ssim(const float* a, const float* b, int H, int W, int C) {
+float image_ssim(const float* a, const float* b, int H, int W, int C,
+                 const uint8_t* keep) {
     if (H < kWin || W < kWin)
         throw std::runtime_error("image_ssim: image smaller than the 11x11 window");
     const std::vector<double> gw = gaussian_window();
@@ -197,6 +211,8 @@ float image_ssim(const float* a, const float* b, int H, int W, int C) {
     double* mxy = myy + np;
     double* tmp = mxy + np;
     std::vector<double> part((size_t)max_threads());
+    int64_t kept = (int64_t)np;
+    if (keep) kept = std::count_if(keep, keep + np, [](uint8_t k) { return k != 0; });
 
     double total = 0.0;
     for (int c = 0; c < C; c++) {
@@ -220,6 +236,7 @@ float image_ssim(const float* a, const float* b, int H, int W, int C) {
             double acc = 0.0;
 #pragma omp for schedule(static) nowait
             for (int64_t i = 0; i < (int64_t)np; i++) {
+                if (keep && !keep[i]) continue;
                 double ux = mx[i], uy = my[i];
                 double sxx = mxx[i] - ux * ux;
                 double syy = myy[i] - uy * uy;
@@ -230,7 +247,7 @@ float image_ssim(const float* a, const float* b, int H, int W, int C) {
             }
             part[(size_t)this_thread()] = acc;
         }
-        total += combine(part) / (double)np;
+        total += combine(part) / (double)std::max<int64_t>(kept, 1);
     }
     return (float)(total / (double)C);
 }
@@ -306,13 +323,13 @@ std::vector<float> color_correct(const float* img, const float* ref,
                                  int64_t num_pixels, int C,
                                  int num_iters, float eps) {
     std::vector<float> out;
-    color_correct_into(img, ref, num_pixels, C, out, num_iters, eps);
+    color_correct_into(img, ref, num_pixels, C, out, nullptr, num_iters, eps);
     return out;
 }
 
 void color_correct_into(const float* img, const float* ref,
                         int64_t num_pixels, int C, std::vector<float>& out,
-                        int num_iters, float eps) {
+                        const uint8_t* keep, int num_iters, float eps) {
     const int n = design_cols(C);
     const size_t nv = (size_t)num_pixels * C;
     const double lo = (double)eps, hi = 1.0 - (double)eps;
@@ -354,6 +371,7 @@ void color_correct_into(const float* img, const float* ref,
             std::vector<double> row((size_t)n);
 #pragma omp for schedule(static) nowait
             for (int64_t p = 0; p < num_pixels; p++) {
+                if (keep && !keep[p]) continue;
                 const float* px = &cur[(size_t)p * C];
                 // Rows saturated in the input, in the current estimate, or in
                 // the reference contribute nothing.
