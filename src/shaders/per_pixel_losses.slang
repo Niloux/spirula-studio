@@ -73,6 +73,7 @@ enum RawLossIndex {
     MedianDepthNormalReg,    // normal_loss(median normal, depth normal)
     MedianNormalSup,         // normal_loss(median normal, ref normal)
     MedianRenderNormalReg,   // normal_loss(median normal, render normal)
+    MetricDepthSup,          // |log(render depth) - log(metric GT depth)|
     PixelsTotal,
     MaskTotal,
     DepthMaskTotal,
@@ -89,6 +90,7 @@ enum RawLossIndex {
     MedianDepthNormalMaskTotal,
     MedianNormalMaskTotal,
     MedianRenderNormalMaskTotal,
+    MetricDepthMaskTotal,
     length
 };
 
@@ -115,6 +117,9 @@ enum LossWeightIndex {
     MedianDepthNormalReg,
     MedianNormalSup,
     MedianRenderNormalReg,
+    MetricDepthSup,
+    // Not a weight: train units per GT depth count (unit scale * relative scale).
+    MetricDepthUnit,
     length
 };
 
@@ -187,8 +192,14 @@ float[RawLossIndex::length] per_pixel_losses(
     losses[RawLossIndex::RgbL2] = float(mask) *
         clamp(l2_loss(render_rgb, ref_rgb), 0.0f, 1.0f);
 
-    // Depth - Pearson correlation in log space
     depth_mask &= mask;
+    // Metric depth (a laser scan's): absolute log error, which Pearson cannot see.
+    bool metric_mask = depth_mask && render_depth > 0.0f;
+    losses[RawLossIndex::MetricDepthSup] = weights[LossWeightIndex::MetricDepthSup] *
+        float(metric_mask) * abs(log(max(render_depth, 1e-4f)) -
+            log(max(ref_depth * weights[LossWeightIndex::MetricDepthUnit], 1e-4f)));
+
+    // Depth - Pearson correlation in log space
     render_depth = float(depth_mask) * max(render_depth, 1e-4);
     ref_depth = float(depth_mask) * max(ref_depth, 1e-4);
     losses[RawLossIndex::DepthSupX] = render_depth;
@@ -264,6 +275,7 @@ float[RawLossIndex::length] per_pixel_losses(
     losses[RawLossIndex::MedianDepthNormalMaskTotal] = float(median_normal_mask & depth_normal_mask & mask);
     losses[RawLossIndex::MedianNormalMaskTotal] = float(median_normal_mask & normal_mask);
     losses[RawLossIndex::MedianRenderNormalMaskTotal] = float(median_normal_mask & render_normal_mask & mask);
+    losses[RawLossIndex::MetricDepthMaskTotal] = float(metric_mask);
 
     return losses;
 }
@@ -365,6 +377,7 @@ enum LossIndex {
     MedianDepthNormalReg,
     MedianNormalSup,
     MedianRenderNormalReg,
+    MetricDepthSup,
     length
 };
 
@@ -443,6 +456,8 @@ float[LossIndex::length] per_pixel_losses_reduce(
         raw_losses[RawLossIndex::MedianNormalSup] / max(raw_losses[RawLossIndex::MedianNormalMaskTotal], 1);
     losses[LossIndex::MedianRenderNormalReg] =
         raw_losses[RawLossIndex::MedianRenderNormalReg] / max(raw_losses[RawLossIndex::MedianRenderNormalMaskTotal], 1);
+    losses[LossIndex::MetricDepthSup] =
+        raw_losses[RawLossIndex::MetricDepthSup] / max(raw_losses[RawLossIndex::MetricDepthMaskTotal], 1);
 
     return losses;
 }

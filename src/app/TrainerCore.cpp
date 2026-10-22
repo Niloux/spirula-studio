@@ -509,6 +509,12 @@ std::string parser_seed(const std::string& seed) {
     return seed == spirula::dense::kSparseSeed ? std::string() : seed;
 }
 
+// A depth map's raw count in train units: the GT stays in file counts on the
+// device, and p_train = relative_scale * (p_dataset - center).
+float depth_count_to_train(const TrainConfig& c) {
+    return c.depth_unit_scale_factor * c.relative_scale.value_or(1.0f);
+}
+
 }  // namespace
 
 std::array<float, (int)LossWeightIndex::length>
@@ -551,6 +557,8 @@ build_loss_weights(const TrainConfig& c, int step) {
     w[(int)LossWeightIndex::MedianDepthNormalReg]  = median_factor * c.median_depth_normal_reg_weight;
     w[(int)LossWeightIndex::MedianNormalSup]       = median_factor * c.median_normal_supervision_weight;
     w[(int)LossWeightIndex::MedianRenderNormalReg] = median_factor * c.median_render_normal_reg_weight;
+    w[(int)LossWeightIndex::MetricDepthSup]  = sup_active * c.metric_depth_weight;
+    w[(int)LossWeightIndex::MetricDepthUnit] = depth_count_to_train(c);
     return w;
 }
 
@@ -2065,7 +2073,8 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         (!eds.mask_filenames.empty() || !eval_alpha.empty()) && cfg.load_masks;
     dm.load_masks  = eval_masks || epost.any_fov_mask;
     set_alpha_config(dm, eval_alpha);
-    dm.load_depths = false;
+    const bool eval_depths = !eds.depth_filenames.empty() && cfg.load_depths;
+    dm.load_depths = eval_depths;
     dm.load_normals = false;
     dm.train_batch_size = 1;
     dm.val_batch_size   = 1;
@@ -2080,7 +2089,8 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         engine_setup_data_manager(
             dm, eds.camera_models, eds.camera_distortions,
             eds.image_filenames,
-            eval_masks ? eds.mask_filenames : std::vector<std::string>{}, {}, {},
+            eval_masks ? eds.mask_filenames : std::vector<std::string>{},
+            eval_depths ? eds.depth_filenames : std::vector<std::string>{}, {},
             eds.widths, eds.heights,
             epost.any_warp ? epost.K_per_camera : std::vector<int32_t>{},
             epost.any_warp ? epost.post_offsets : std::vector<int32_t>{},
@@ -2106,12 +2116,18 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         int64_t index = 0;
         int H = 0, W = 0, C = 0;
         std::vector<float> gt, pred;
+        int Hd = 0, Wd = 0;                   // GT depth, raw counts; empty without one
+        std::vector<float> gt_depth, pred_depth;
     };
     struct ViewScore {
         bool  filled = false;
         float l1 = 0, psnr = 0, ssim = 0, cc_l1 = 0, cc_psnr = 0, cc_ssim = 0;
         std::vector<float> lpips, cc_lpips;   // one per lpips_names entry
+        bool  has_depth = false;
+        float depth_median_error = 0, depth_within_2cm = 0;   // metres, fraction
     };
+    const float metres_per_count = cfg.depth_unit_scale_factor;
+    const float metres_per_train = 1.0f / cfg.relative_scale.value_or(1.0f);
 
     // On the inference layer's device, which takes one view at a time. A
     // failure drops LPIPS from metrics.json and keeps everything else.
@@ -2172,6 +2188,28 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         s.cc_l1   = image_l1(g, cc.data(), view_px);
         s.cc_psnr = image_psnr(g, cc.data(), view_px);
         s.cc_ssim = image_ssim(g, cc.data(), j.H, j.W, j.C);
+        // At every measured GT pixel, against the render pixel holding its centre.
+        if (!j.gt_depth.empty()) {
+            std::vector<float> err;
+            for (int y = 0; y < j.Hd; y++)
+                for (int x = 0; x < j.Wd; x++) {
+                    const float d = j.gt_depth[(size_t)y * j.Wd + x];
+                    if (!(d > 0.0f)) continue;
+                    const int xr = std::min(j.W - 1, (int)((x + 0.5f) * j.W / j.Wd));
+                    const int yr = std::min(j.H - 1, (int)((y + 0.5f) * j.H / j.Hd));
+                    err.push_back(std::fabs(j.pred_depth[(size_t)yr * j.W + xr] *
+                                                metres_per_train - d * metres_per_count));
+                }
+            if (!err.empty()) {
+                const auto within = std::count_if(err.begin(), err.end(),
+                                                  [](float e) { return e < 0.02f; });
+                auto mid = err.begin() + (std::ptrdiff_t)(err.size() / 2);
+                std::nth_element(err.begin(), mid, err.end());
+                s.has_depth = true;
+                s.depth_median_error = *mid;
+                s.depth_within_2cm = (float)within / (float)err.size();
+            }
+        }
         if (lpips_ok.load()) {
             // On the 8-bit images, as eval_lpips.py and 3DGS's metrics.py score
             // them: bonsai's float renders averaged 1.8% (alex) / 0.9% (vgg)
@@ -2255,11 +2293,12 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
 
     for (int64_t i = 0; i < eds.num_cameras; i++) {
         if (stop_requested.load() || worker_failed.load()) break;
-        int64_t H = 0, W = 0, B = 0, Cc = 0;
-        std::vector<float> gt, render;
+        int64_t H = 0, W = 0, B = 0, Cc = 0, Hd = 0, Wd = 0;
+        std::vector<float> gt, render, gt_depth, render_depth;
         {
             std::lock_guard<std::mutex> lk(engine_mutex);
-            int n_view = engine_eval_forward(cfg.primitive, sh_deg, cfg.packed);
+            int n_view = engine_eval_forward(cfg.primitive, sh_deg, cfg.packed,
+                                             st.input_depth_is_ray_depth);
             if (n_view == 0) break;
             auto shape = engine_get_render_rgb_shape();
             B = std::get<0>(shape); H = std::get<1>(shape);
@@ -2273,6 +2312,21 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
                 TorchTensorView{0, 0, {}}, TorchTensorView{0, 0, {}});
             engine_copy_gt_rgb_to_host(
                 TorchTensorView{(uint64_t)(uintptr_t)gt.data(), 4, {B, H, W, Cc}});
+            const auto dshape = eval_depths ? engine_get_gt_depth_shape()
+                                            : std::tuple<int64_t, int64_t, int64_t, int64_t>{};
+            if (std::get<0>(dshape) == B) {
+                Hd = std::get<1>(dshape);
+                Wd = std::get<2>(dshape);
+                gt_depth.resize((size_t)(B * Hd * Wd));
+                render_depth.resize((size_t)(B * H * W));
+                engine_copy_gt_depth_to_host(
+                    TorchTensorView{(uint64_t)(uintptr_t)gt_depth.data(), 4, {B, Hd, Wd, 1}});
+                engine_copy_render_to_host(
+                    TorchTensorView{0, 0, {}},
+                    TorchTensorView{(uint64_t)(uintptr_t)render_depth.data(), 4, {B, H, W, 1}},
+                    TorchTensorView{0, 0, {}}, TorchTensorView{0, 0, {}},
+                    TorchTensorView{0, 0, {}});
+            }
         }
 
         // Per POST-split view inside the batch (K faces of one input image).
@@ -2286,6 +2340,13 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
             job.pred.assign(render.begin() + (size_t)(v * view_px),
                             render.begin() + (size_t)((v + 1) * view_px));
             for (float& x : job.pred) x = std::min(std::max(x, 0.0f), 1.0f);
+            if (!gt_depth.empty()) {
+                job.Hd = (int)Hd; job.Wd = (int)Wd;
+                job.gt_depth.assign(gt_depth.begin() + (size_t)(v * Hd * Wd),
+                                    gt_depth.begin() + (size_t)((v + 1) * Hd * Wd));
+                job.pred_depth.assign(render_depth.begin() + (size_t)(v * H * W),
+                                      render_depth.begin() + (size_t)((v + 1) * H * W));
+            }
             {
                 std::unique_lock<std::mutex> lk(qmu);
                 spacecv.wait(lk, [&] {
@@ -2327,6 +2388,11 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         for (size_t m = 0; with_lpips && m < lpips_names.size(); ++m) {
             per_image[lpips_names[m]].push_back(s.lpips[m]);
             per_image["cc_" + lpips_names[m]].push_back(s.cc_lpips[m]);
+        }
+        // Only the views with a depth map, so these lists can be shorter.
+        if (s.has_depth) {
+            per_image["depth_median_abs_error"].push_back(s.depth_median_error);
+            per_image["depth_within_2cm"].push_back(s.depth_within_2cm);
         }
     }
 

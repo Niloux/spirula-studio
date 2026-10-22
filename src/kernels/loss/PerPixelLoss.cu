@@ -202,7 +202,8 @@ __global__ void per_pixel_losses_forward_kernel(
                 losses[(int)RawLossIndex::MeanMedianDepthSup] +
                 losses[(int)RawLossIndex::MedianDepthNormalReg] +
                 losses[(int)RawLossIndex::MedianNormalSup] +
-                losses[(int)RawLossIndex::MedianRenderNormalReg]
+                losses[(int)RawLossIndex::MedianRenderNormalReg] +
+                losses[(int)RawLossIndex::MetricDepthSup]
             );
             // TODO: more accurate version
         }
@@ -1534,6 +1535,7 @@ LossValues compute_multi_scale_per_pixel_losses(
         out.median_depth_normal_reg  = h_prev[(int)LossIndex::MedianDepthNormalReg];
         out.median_normal_sup        = h_prev[(int)LossIndex::MedianNormalSup];
         out.median_render_normal_reg = h_prev[(int)LossIndex::MedianRenderNormalReg];
+        out.metric_depth_sup         = h_prev[(int)LossIndex::MetricDepthSup];
     }
     out.ssim = ssim_val;
     out.delta_e = delta_e;

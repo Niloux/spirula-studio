@@ -292,6 +292,7 @@ inline bool train_choices_free_form(const char* choices) {
     X(int, alpha_reg_warmup, 12000, "geometry", "advanced", "")              \
     X(int, reg_warmup_length, 0, "geometry", "advanced", "")                 \
     X(float, depth_supervision_weight, 0.0f, "geometry", "basic", "")        \
+    X(float, metric_depth_weight, 0.0f, "geometry", "advanced", "")          \
     X(float, normal_supervision_weight, 0.01f, "geometry", "basic", "")      \
     X(std::optional<bool>, input_depth_is_ray_depth, std::nullopt, "geometry", "basic", "") \
     X(int, supervision_warmup, 0, "geometry", "expert", "")                  \

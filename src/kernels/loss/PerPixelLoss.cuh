@@ -24,6 +24,7 @@ enum class RawLossIndex {
     MedianDepthNormalReg,
     MedianNormalSup,
     MedianRenderNormalReg,
+    MetricDepthSup,
     PixelsTotal,
     MaskTotal,
     DepthMaskTotal,
@@ -37,6 +38,7 @@ enum class RawLossIndex {
     MedianDepthNormalMaskTotal,
     MedianNormalMaskTotal,
     MedianRenderNormalMaskTotal,
+    MetricDepthMaskTotal,
     length
 };
 
@@ -64,6 +66,8 @@ enum class LossWeightIndex {
     MedianDepthNormalReg,
     MedianNormalSup,
     MedianRenderNormalReg,
+    MetricDepthSup,
+    MetricDepthUnit,   // not a weight: train units per GT depth count
     length
 };
 
@@ -82,6 +86,7 @@ enum class LossIndex {
     MedianDepthNormalReg,
     MedianNormalSup,
     MedianRenderNormalReg,
+    MetricDepthSup,
     length
 };
 
@@ -177,6 +182,7 @@ struct LossValues {
     float median_depth_normal_reg;
     float median_normal_sup;
     float median_render_normal_reg;
+    float metric_depth_sup;
     float ssim;
     float delta_e;
     float flip;

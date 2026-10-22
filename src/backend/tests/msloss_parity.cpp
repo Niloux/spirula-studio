@@ -280,6 +280,7 @@ void run_ms_cfg(Rng& r, const MsCfg& c) {
     g_loose.push_back(lv.median_depth_normal_reg);
     g_loose.push_back(lv.median_normal_sup);
     g_loose.push_back(lv.median_render_normal_reg);
+    g_loose.push_back(lv.metric_depth_sup);
     g_loose.push_back(lv.ssim);
     g_loose.push_back(lv.delta_e);
     g_loose.push_back(lv.flip);

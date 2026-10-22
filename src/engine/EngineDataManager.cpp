@@ -551,16 +551,18 @@ static void _install_batch(const DecodedBatch& b, bool with_geometry,
     }
 }
 
-// Install a decoded batch and run the forward pass alone, for eval.
+// Install a decoded batch and run the forward pass alone, for eval. Its depth
+// GT, when the eval data manager loaded one, is what the depth metrics read.
 static int _install_and_forward(const DecodedBatch& b, std::string primitive,
-                                int sh_degree, bool packed) {
-    _install_batch(b, /*with_geometry=*/false, true, 0);
+                                int sh_degree, bool packed, bool input_depth_is_ray_depth) {
+    _install_batch(b, /*with_geometry=*/true, input_depth_is_ray_depth, 0);
     forward_3dgs(std::move(primitive), sh_degree, packed,
                  /*output_median=*/false, 0);
     return _batch_views(b, 0);
 }
 
-int engine_eval_forward(std::string primitive, int sh_degree, bool packed) {
+int engine_eval_forward(std::string primitive, int sh_degree, bool packed,
+                        bool input_depth_is_ray_depth) {
     if (!engine().dm)
         throw std::runtime_error(
             "engine_eval_forward: DataManager not configured — call "
@@ -578,7 +580,8 @@ int engine_eval_forward(std::string primitive, int sh_degree, bool packed) {
         throw std::runtime_error(
             "engine_eval_forward: the eval split must be baked with uniform "
             "faces, which is what TrainerCore does");
-    return _install_and_forward(b, std::move(primitive), sh_degree, packed);
+    return _install_and_forward(b, std::move(primitive), sh_degree, packed,
+                                input_depth_is_ray_depth);
 }
 
 int engine_preview_forward(int index, std::string primitive, int sh_degree,

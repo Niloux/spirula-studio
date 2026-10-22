@@ -28,9 +28,9 @@ namespace {
 
 using backend::MemcpyKind;
 
-constexpr int kNRaw = (int)RawLossIndex::length;   // 31
-constexpr int kNW = (int)LossWeightIndex::length;  // 19
-constexpr int kNL = (int)LossIndex::length;        // 14
+constexpr int kNRaw = (int)RawLossIndex::length;   // 33
+constexpr int kNW = (int)LossWeightIndex::length;  // 21
+constexpr int kNL = (int)LossIndex::length;        // 15
 
 // ---------------------------------------------------------------------------
 // Param-struct mirrors (shaders/multi_scale_loss.slang etc.)
@@ -1445,6 +1445,7 @@ LossValues compute_multi_scale_per_pixel_losses(
         out.median_depth_normal_reg  = h_prev[(int)LossIndex::MedianDepthNormalReg];
         out.median_normal_sup        = h_prev[(int)LossIndex::MedianNormalSup];
         out.median_render_normal_reg = h_prev[(int)LossIndex::MedianRenderNormalReg];
+        out.metric_depth_sup         = h_prev[(int)LossIndex::MetricDepthSup];
     }
     out.ssim = ssim_val;
     out.delta_e = delta_e;

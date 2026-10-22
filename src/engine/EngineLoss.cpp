@@ -961,6 +961,8 @@ static std::map<std::string, float> _engine_loss(
         loss_weights[(int)LossWeightIndex::MedianNormalSup]);
     loss_dict["median_render_normal_reg"] = sdiv(lv.median_render_normal_reg,
         loss_weights[(int)LossWeightIndex::MedianRenderNormalReg]);
+    loss_dict["metric_depth_loss"] = sdiv(lv.metric_depth_sup,
+        loss_weights[(int)LossWeightIndex::MetricDepthSup]);
 
     return loss_dict;
 }

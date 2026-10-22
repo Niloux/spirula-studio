@@ -8455,6 +8455,62 @@ SS_MSG(depth_supervision_weight_help,
     TR("Yapay zekânın kestirdiği derinliğin geometriyi ne kadar güçlü yönlendirdiği. "
        "Dokusuz alanlarda işe yarar, ama ağır yanlı bir kestirim kaliteyi düşürebilir."));
 
+SS_MSG(metric_depth_weight,
+    EN("Measured depth guidance"), JA("計測深度による誘導"),
+    ZH_HANS("实测深度的引导强度"), ZH_HANT("實測深度的引導強度"),
+    KO("측정 깊이 안내"), DE("Führung durch gemessene Tiefe"),
+    FR("Guidage par la profondeur mesurée"),
+    ES("Guía por la profundidad medida"),
+    PT("Orientação pela profundidade medida"),
+    IT("Guida dalla profondità misurata"),
+    NL("Sturing door de gemeten diepte"),
+    RU("Направление по измеренной глубине"),
+    TR("Ölçülen derinlik rehberliği"));
+SS_MSG(metric_depth_weight_help,
+    EN("How strongly depth measured by a laser scan pulls each surface to where "
+       "the scan found it, in absolute terms. Only for real distances: AI-predicted "
+       "depth has no reliable scale, so leave this at 0 for it."),
+    JA("レーザースキャンで計測した深度が、各面をスキャンの位置へ絶対的にどれだ"
+       "け強く引き寄せるかです。実際の距離専用です。AI が推定した深度には信頼で"
+       "きる尺度がないので、その場合は 0 のままにします。"),
+    ZH_HANS("激光扫描实测的深度把每个表面拉到扫描位置的强度，按绝对距离计算。"
+            "只用于真实距离：AI 预测的深度没有可靠的尺度，这时请保持为 0。"),
+    ZH_HANT("雷射掃描實測的深度把每個表面拉到掃描位置的強度，按絕對距離計算。"
+            "只用於真實距離：AI 預測的深度沒有可靠的尺度，這時請保持為 0。"),
+    KO("레이저 스캔으로 측정한 깊이가 각 면을 스캔 위치로 절대적으로 얼마나 강하게 "
+       "끌어당기는지입니다. 실제 거리에만 쓰십시오. AI가 예측한 깊이에는 믿을 수 "
+       "있는 척도가 없으므로 그때는 0으로 두십시오."),
+    DE("Wie stark eine per Laserscan gemessene Tiefe jede Fläche absolut dorthin "
+       "zieht, wo der Scan sie fand. Nur für echte Entfernungen: KI-geschätzte "
+       "Tiefe hat keinen verlässlichen Maßstab, also dafür bei 0 lassen."),
+    FR("Avec quelle force la profondeur mesurée par un scan laser ramène chaque "
+       "surface, en absolu, là où le scan l'a trouvée. Réservé aux vraies "
+       "distances : la profondeur estimée par l'IA n'a pas d'échelle fiable, "
+       "laissez donc 0 dans ce cas."),
+    ES("Con qué fuerza la profundidad medida por un escaneo láser lleva cada "
+       "superficie, en términos absolutos, a donde el escaneo la encontró. Solo "
+       "para distancias reales: la profundidad estimada por la IA no tiene una "
+       "escala fiable, así que déjelo en 0 para ella."),
+    PT("Com que força a profundidade medida por um varrimento laser leva cada "
+       "superfície, em termos absolutos, para onde o varrimento a encontrou. Só "
+       "para distâncias reais: a profundidade estimada pela IA não tem escala "
+       "fiável, por isso deixe 0 nesse caso."),
+    IT("Con quanta forza la profondità misurata da una scansione laser porta ogni "
+       "superficie, in termini assoluti, dove la scansione l'ha trovata. Solo per "
+       "distanze reali: la profondità stimata dall'IA non ha una scala affidabile, "
+       "quindi in quel caso lasciare 0."),
+    NL("Hoe sterk de met een laserscan gemeten diepte elk oppervlak absoluut naar "
+       "de plek trekt waar de scan het vond. Alleen voor echte afstanden: door AI "
+       "voorspelde diepte heeft geen betrouwbare schaal, laat het dan op 0."),
+    RU("Насколько сильно глубина, измеренная лазерным сканированием, притягивает "
+       "каждую поверхность в абсолютных величинах туда, где её нашёл скан. Только "
+       "для настоящих расстояний: у предсказанной ИИ глубины нет надёжного "
+       "масштаба, поэтому для неё оставьте 0."),
+    TR("Lazer taramasıyla ölçülen derinliğin her yüzeyi mutlak olarak taramanın "
+       "bulduğu yere ne kadar güçlü çektiği. Yalnızca gerçek mesafeler için: yapay "
+       "zekânın kestirdiği derinliğin güvenilir bir ölçeği yoktur, o durumda 0 "
+       "bırakın."));
+
 SS_MSG(normal_supervision_weight,
     EN("Predicted normal guidance"), JA("推定法線による誘導"),
     ZH_HANS("预测法线的引导强度"), ZH_HANT("預測法線的引導強度"),
