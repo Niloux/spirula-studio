@@ -158,6 +158,7 @@ static std::map<std::string, float> _engine_step_fwd_bwd_only(
     engine().grad.quantize_grad =
         !cfg.optim.use_fused_proj_bwd_optim && (cfg.optim.quantization_level != 0);
 
+    engine_shutter_bind(bilagrid_cam_indices, true);
     _set_cur_cam_indices(bilagrid_cam_indices);
     engine_max_weight_begin_step(step, max_steps, cfg.densify);
 
@@ -240,6 +241,7 @@ static std::map<std::string, float> _engine_step_fwd_bwd_only(
         cfg.loss.overexposure_reg_weight,
         cfg.loss.color_shift_reg_weight,
         cfg.loss.color_shift_reg_beta);
+    engine_shutter_accumulate();
     engine_bin_tile_observe(std::chrono::duration<double>(
         std::chrono::steady_clock::now() - step_t0).count());
     _visit_accumulate_camera_stats(primitive);
@@ -260,6 +262,7 @@ static void _engine_step_optim_and_densify(
     {
         SplatStageTimer stage_timer;
         engine_optim_step(step, cfg.optim);
+        engine_shutter_step();
     }
 
     if (engine().background.enabled) {

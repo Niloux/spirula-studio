@@ -15,7 +15,7 @@ template void projection_fused_fwd_kernel_wrapper<
     Vanilla3DGUT<4>::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -44,7 +44,7 @@ template void projection_fused_fwd_kernel_wrapper<
     Vanilla3DGUT<4>::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -73,7 +73,7 @@ template void projection_fused_fwd_kernel_wrapper<
     Vanilla3DGUT<4>::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -102,7 +102,7 @@ template void projection_fused_fwd_kernel_wrapper<
     Vanilla3DGUT<4>::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -131,7 +131,7 @@ template void projection_fused_fwd_kernel_wrapper<
     Vanilla3DGUT<4>::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs

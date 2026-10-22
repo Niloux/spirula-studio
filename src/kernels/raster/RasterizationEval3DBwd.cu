@@ -26,7 +26,7 @@ void rasterize_to_pixels_eval3d_bwd_kernel_wrapper(
     const typename SplatPrimitive::ScreenBuffer splat_sbuffer,
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed AABB
     const uint32_t image_width,
     const uint32_t image_height,
@@ -70,7 +70,7 @@ inline void launch_rasterize_to_pixels_eval3d_bwd_kernel(
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,
@@ -141,7 +141,7 @@ inline void launch_rasterize_to_pixels_eval3d_bwd_kernel(
 
     #define _DISPATCH(M, D) \
         if (camera_model == CameraModelType::M && distortion == CameraDistortionType::D) { \
-            if (v_viewmats.data_ptr() != nullptr) \
+            if (v_viewmats.data_ptr() != nullptr || dist_coeffs.shutter.gradient != nullptr) \
                 rasterize_to_pixels_eval3d_bwd_kernel_wrapper<SplatPrimitive, \
                     CameraModelType::M, CameraDistortionType::D, \
                     dist_type, true, accum_mode, output_median> _LAUNCH_ARGS; \
@@ -174,7 +174,7 @@ inline std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,
@@ -210,6 +210,9 @@ inline std::tuple<
     if (!v_splats_s.has_value())
         v_splats_s = SplatPrimitive::ScreenBuffer::zeros_pool(splats_s, PoolSlot::RasterBwdVScreen);
 
+    // Readout rays replace the pose's ray origin; the pose gradient tail assumes the global one.
+    if (need_viewmat_grad && dist_coeffs.shutter.motion)
+        throw std::runtime_error("Pose gradients are not available with rolling-shutter cameras");
     DeviceTensor2D<float> v_viewmats_buf;
     if (need_viewmat_grad) {
         auto& shape = std::get<2>(viewmats);
@@ -275,7 +278,7 @@ inline std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,
@@ -339,7 +342,7 @@ std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,

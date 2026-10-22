@@ -1,6 +1,7 @@
 // TrainerCore.cpp -- see TrainerCore.h.
 
 #include "app/TrainerCore.h"
+#include "engine/EngineShutter.h"
 #include "backend/api/BackendRuntime.h"
 #include "core/Env.h"
 #include "core/SphericalBeta.h"
@@ -1413,6 +1414,14 @@ void TrainerSession::setup_engine() {
         post.input_intrins, post.input_dist_coeffs,
         post.redistort_models, post.redistort_params,
         ds.train_indices, ds.val_indices);
+    engine_init_rolling_shutter(cfg.data, cfg.image_dir, cfg.colmap_recon_dir, ds.image_filenames,
+        cfg.rolling_shutter,cfg.relative_scale.value_or(1.0f),cfg.shutter_rotation_lr,
+        cfg.shutter_readout_lr,cfg.shutter_regularization);
+    if (!engine_shutter_save().empty()) {
+        if (cfg.primitive != "3dgut" || post.any_warp || !ds.redistort.empty() ||
+            cfg.exif_orientation == "apply")
+            throw std::runtime_error("Rolling shutter requires native 3dgut cameras without image warping or EXIF rotation");
+    }
     engine_set_view_stats(dm.deficit_sampling);
 
     // ---- Bilagrid / PPISP init -----------------------------------------
@@ -2056,6 +2065,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
             epost.input_intrins, epost.input_dist_coeffs,
             epost.redistort_models, epost.redistort_params,
             all_idx, {});
+        engine_shutter_select_images(eds.image_filenames);
     }
 
     log(lfmt(lmsg::eval_views, {(long long)epost.n_post}));

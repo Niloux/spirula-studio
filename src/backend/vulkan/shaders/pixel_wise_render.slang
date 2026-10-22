@@ -175,6 +175,7 @@ struct DepthToNormalParams {  // 52 bytes: pushed directly
     float* dist_coeffs;   // [B,8] or null
     float* depths;        // [B,H,W,1]
     float* normals;       // [B,H,W,3]
+    float* shutter;
     uint32_t W;
     uint32_t H;
     uint32_t B;
@@ -211,6 +212,13 @@ void _d2n_fill_apron<D : ICameraDistortion>(DepthToNormalParams p, uint bid,
     _d2n_fill_apron<D>(p, bid, uint2(wg.x * D2N_TILE, wg.y * D2N_TILE), tid, \
                        intrin)
 
+
+void shutter_normal_rays<D : ICameraDistortion>(float* coeffs, uint bid, int camera_model,
+    float4 intrin, float2 pixels[4], out float3 rays[4]) {
+    float dist[D.kNumParams]; load_dist_coeffs<D>(coeffs,bid,dist);
+    for (int k=0;k<4;++k) rays[k]=generate_ray_d2n<D>(pixels[k],intrin,dist,camera_model,true);
+}
+#define _shutter_normal_rays(D) shutter_normal_rays<D>(p.dist_coeffs,bid,p.camera_model,intrin,pixels,rays)
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void depth_to_normal_fwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
@@ -230,6 +238,25 @@ void depth_to_normal_fwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
     }
 
     float4 intrin = p.intrins[bid];
+    if (!is_null(p.shutter)) {
+        if (!inside) return;
+        float* m=p.shutter+8*bid;
+        int dx[4]={-1,1,0,0},dy[4]={0,0,-1,1};
+        float3 rays[4]; float2 pixels[4]; float4 fractions,d;
+        for (int k=0;k<4;++k) {
+            pixels[k]=float2(float(int(i)+dx[k])+.5f,float(int(j)+dy[k])+.5f);
+            fractions[k]=m[7]==0 ? pixels[k].x/p.W-.5f : pixels[k].y/p.H-.5f;
+            d[k]=p.depths[(bid*p.H+uint(int(j)+dy[k]))*p.W+uint(int(i)+dx[k])];
+        }
+        SS_DISPATCH_DIST(_shutter_normal_rays)
+        float centre=m[7]==0 ? (float(i)+.5f)/p.W-.5f : (float(j)+.5f)/p.H-.5f;
+        float3 w=float3(m[0],m[1],m[2]),t=float3(m[3],m[4],m[5]);
+        float3 n=shutter_normal(rays,fractions,centre,d,w,t);
+        uint o=((bid*p.H+j)*p.W+i)*3;
+        p.normals[o]=n.x; p.normals[o+1]=n.y; p.normals[o+2]=n.z;
+        return;
+    }
+
 
     // Shared apron of unprojected points (ray * depth), same layout as the
     // CUDA kernel's shared_points[TILE+2][TILE+2].

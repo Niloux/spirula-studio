@@ -29,6 +29,7 @@
 #include "shaders/harmonics.slang"
 #undef CudaDeviceExport
 #include "dist_spec.slang"
+#include "atomic_float.slang"
 
 [SpecializationConstant]
 const int kShDegree = 0;
@@ -39,6 +40,7 @@ struct BackgroundShFwdParams {  // 56 bytes: pushed directly
     float* dist_coeffs;  // [B,8] or null
     float* sh_coeffs;    // [(kShDegree+1)^2, 3]
     float* out_img;      // [B,H,W,3]
+    float* shutter;
     uint32_t width;
     uint32_t height;
     uint32_t B;
@@ -76,7 +78,15 @@ void background_sh_fwd(uint3 gtid: SV_DispatchThreadID,
     bool ray_ok = false;
     SS_DISPATCH_DIST(_bg_ray)
     if (ray_ok) {
-        float3 dir = transform_ray_d(R, raydir);
+        float fraction=0; float3 rotation=float3(0);
+        float3 local=raydir;
+        if (!is_null(p.shutter)) {
+            float* m=p.shutter+8*bi;
+            fraction=m[7]==0 ? (float(px)+.5f)/p.width-.5f : (float(py)+.5f)/p.height-.5f;
+            rotation=float3(m[0],m[1],m[2]);
+            local=normalize(shutter_inverse(fraction*rotation,raydir));
+        }
+        float3 dir = transform_ray_d(R, local);
         float3 dc = float3(p.sh_coeffs[0], p.sh_coeffs[1], p.sh_coeffs[2]);
         float* coeffs_l1 = p.sh_coeffs + 3;
         switch (kShDegree) {
@@ -108,6 +118,8 @@ struct BackgroundShBwdParams {  // 80 bytes: pushed directly
     float* out_color;    // [B,H,W,3] forward output (clamp mask)
     float* v_out_color;  // [B,H,W,3]
     float* scratch;      // [kBgBwdSlices, K, 3] zero-initialized partials
+    float* shutter;
+    float* v_shutter;
     uint32_t width;
     uint32_t height;
     uint32_t B;
@@ -133,6 +145,10 @@ void background_sh_bwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
     float* coeffs_l1 = p.sh_coeffs + 3;
 
     float3 v_dc = float3(0.0f);
+    // Every pixel of an image adds into the same three floats: sum a run of
+    // pixels of one image here, then add it once.
+    float3 v_rotation = float3(0.0f);
+    uint rotation_bi = 0;
     for (uint pix = slice; pix < total; pix += kBgBwdSlices) {
         uint px = pix % p.width;
         uint rem = pix / p.width;
@@ -161,9 +177,16 @@ void background_sh_bwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
         bool ray_ok = false;
         SS_DISPATCH_DIST(_bg_ray)
         if (!ray_ok) continue;
-        float3 dir = transform_ray_d(R, raydir);
+        float fraction=0; float3 rotation=float3(0);
+        float3 local=raydir;
+        if (!is_null(p.shutter)) {
+            float* m=p.shutter+8*bi;
+            fraction=m[7]==0 ? (float(px)+.5f)/p.width-.5f : (float(py)+.5f)/p.height-.5f;
+            rotation=float3(m[0],m[1],m[2]);
+            local=normalize(shutter_inverse(fraction*rotation,raydir));
+        }
+        float3 dir = transform_ray_d(R, local);
 
-        // v_dir is discarded (engine holds cameras fixed, as in CUDA).
         float3 v_dir = float3(0.0f);
         switch (kShDegree) {
         case 0: sh_coeffs_to_color_vjp_inplace(0, dir, dc, coeffs_l1, v_color,
@@ -177,7 +200,21 @@ void background_sh_bwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
         case 4: sh_coeffs_to_color_vjp_inplace(4, dir, dc, coeffs_l1, v_color,
                                                v_dc, my_coeffs, v_dir); break;
         }
+        if (!is_null(p.v_shutter)) {
+            float3 vw,vt;
+            float n=length(shutter_inverse(fraction*rotation,raydir));
+            float3 raw_grad=(v_dir-dir*dot(dir,v_dir))/n;
+            shutter_ray_vjp(R,raydir,rotation,fraction,float3(0),raw_grad,vw,vt);
+            if (bi != rotation_bi) {
+                for (int k=0;k<3;++k) atomic_add_f32(p.v_shutter+8*rotation_bi+k,v_rotation[k]);
+                v_rotation = float3(0.0f);
+                rotation_bi = bi;
+            }
+            v_rotation += vw;
+        }
     }
+    if (!is_null(p.v_shutter))
+        for (int k=0;k<3;++k) atomic_add_f32(p.v_shutter+8*rotation_bi+k,v_rotation[k]);
     my[0] = v_dc.x;
     my[1] = v_dc.y;
     my[2] = v_dc.z;

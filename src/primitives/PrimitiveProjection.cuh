@@ -43,6 +43,10 @@ struct Slang3DGSProj<CameraModelType::MODEL, CameraDistortionType::TIER> {      
         Slang3DGS::projection_3dgut_##MODEL_SUFFIX##TIER_SUFFIX(antialiased, args...); \
     }                                                                              \
     template<typename... Args>                                                     \
+    static __device__ __forceinline__ void fwd_rolling_shutter(Args... args) {     \
+        Slang3DGS::shutter_projection_3dgut_##MODEL_SUFFIX##TIER_SUFFIX(args...);  \
+    }                                                                              \
+    template<typename... Args>                                                     \
     static __device__ __forceinline__ void vjp_2d(                                 \
         bool antialiased, Args... args                                             \
     ) {                                                                            \

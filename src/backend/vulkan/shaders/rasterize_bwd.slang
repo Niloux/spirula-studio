@@ -76,6 +76,9 @@ groupshared float _rb_medzf[RB_MED_N];
 groupshared float _rb_medTf[RB_MED_N];
 groupshared int _rb_bin[RB_BLOCK];       // 2d: last_ids
 groupshared float4 _rb_raybin[RB_BLOCK]; // 3dgut: (ray_d, bin as bits)
+groupshared float3 _rb_origin[RB_BLOCK];
+groupshared float3 _rb_ref[RB_VMG_N];
+groupshared float3 _rb_vrayo[RB_VMG_N];
 groupshared float3 _rb_vrayd[RB_VMG_N];  // 3dgut viewmat grad per pixel
 groupshared int _rb_surv[SURV_CAP];      // flatten range index
 groupshared int _rb_ssid[SURV_CAP];      // flatten_ids[surv]
@@ -569,6 +572,8 @@ struct Raster3dgutBwdParams {  // via params ring
     float* o_accum_weight_den;  // kAccumAvg lane 2
     uint* o_max_weight;    // kMaxWeight; float bits
     float* v_viewmats;   // [I,16], kViewmatGrad
+    float* shutter;
+    float* v_shutter;
     uint32_t I;
     uint32_t N;
     uint32_t n_isects;
@@ -608,6 +613,7 @@ void _rb3_step(Raster3dgutBwdParams p, int pix_id, int splat_idx,
     float4 rb = _rb_raybin[pix_id];
     if (splat_idx > asint(rb.w)) return;
     float3 ray_d = rb.xyz;
+    if (!is_null(p.shutter)) ray_o = _rb_origin[pix_id];
 
     float alpha = evaluate_alpha_3dgs(splat.mean, splat.iscl_rot,
                                       splat.opacity, ray_o, ray_d);
@@ -659,6 +665,7 @@ void _rb3_step(Raster3dgutBwdParams p, int pix_id, int splat_idx,
     if (kViewmatGrad != 0) {
         total_v_ray_o += v_ray_o_a + v_ray_o_c;
         _rb_vrayd[pix_id] += v_ray_d_a + v_ray_d_c;
+        if (!is_null(p.shutter)) _rb_vrayo[pix_id] += v_ray_o_a + v_ray_o_c;
     }
 }
 
@@ -667,7 +674,7 @@ void _rb3_step(Raster3dgutBwdParams p, int pix_id, int splat_idx,
 [ForceInline]
 void _rb3_reduce_add(float* dst, float val, uint tid) {
     GroupMemoryBarrierWithGroupSync();
-    _rb_red[tid] = _rb_finitef(val) ? val : 0.0f;
+    _rb_red[tid] = val;
     GroupMemoryBarrierWithGroupSync();
     if (tid == 0) {
         float s = 0.0f;
@@ -721,6 +728,15 @@ void rasterize_bwd_3dgut(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
         SS_DISPATCH_DIST(_rb_ray)
         inside = inside && ray_ok;
         float3 ray_d = transform_ray_d(R, raydir);
+        float3 origin = ray_o;
+        if (!is_null(p.shutter)) {
+            float* m = p.shutter + 8*image_id;
+            float s = m[7] == 0 ? px/p.width-.5f : py/p.height-.5f;
+            shutter_ray(R,tvec,raydir,float3(m[0],m[1],m[2]),float3(m[3],m[4],m[5]),s,origin,ray_d);
+        }
+        _rb_origin[pix] = origin;
+        if (kViewmatGrad != 0) { _rb_ref[pix] = raydir; _rb_vrayo[pix] = float3(0); }
+
         _rb_raybin[pix] = float4(ray_d, asfloat(bin_final));
         if (kViewmatGrad != 0) _rb_vrayd[pix] = float3(0.0f);
         _rb_load_pixel_state(
@@ -908,8 +924,25 @@ void rasterize_bwd_3dgut(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
         GroupMemoryBarrierWithGroupSync();
     }
 
+    if (kViewmatGrad != 0 && !is_null(p.v_shutter)) {
+        float* m = p.shutter + 8*image_id;
+        float3 gw = float3(0), gd = float3(0);
+        for (uint pix=tid;pix<RB_BLOCK;pix+=RB_THREADS) {
+            float px=float(wg.z*TILE_SIZE_DX+pix%TILE_SIZE_DX)+.5f;
+            float py=float(wg.y*TILE_SIZE_DY+pix/TILE_SIZE_DX)+.5f;
+            if (px >= p.width || py >= p.height || dot(_rb_ref[pix],_rb_ref[pix]) == 0) continue;
+            float s=m[7]==0 ? px/p.width-.5f : py/p.height-.5f;
+            float3 w,d;
+            shutter_ray_vjp(R,_rb_ref[pix],float3(m[0],m[1],m[2]),s,_rb_vrayo[pix],_rb_vrayd[pix],w,d);
+            gw+=w; gd+=d;
+        }
+        float* out_grad=p.v_shutter+8*image_id;
+        _rb3_reduce_add(out_grad+0,gw.x,tid); _rb3_reduce_add(out_grad+1,gw.y,tid);
+        _rb3_reduce_add(out_grad+2,gw.z,tid); _rb3_reduce_add(out_grad+3,gd.x,tid);
+        _rb3_reduce_add(out_grad+4,gd.y,tid); _rb3_reduce_add(out_grad+5,gd.z,tid);
+    }
     // ---- viewmat gradient tail ----
-    if (kViewmatGrad != 0) {
+    if (kViewmatGrad != 0 && is_null(p.shutter)) {
         float3x3 v_R;
         float3 v_t;
         transform_ray_o_vjp(R, tvec, total_v_ray_o, v_R, v_t);

@@ -5,6 +5,10 @@ describe is gone -- see §3 for what it covered and what now does not.
 
 ## 1. Native cross-backend parity tests (the important ones)
 
+`rolling_shutter_parity` checks native 3DGUT readout rays against a CPU reference,
+motion gradients against finite differences, moving-camera plane normals and
+checkpoint continuation. See [rolling-shutter training](notes/rolling-shutter.md).
+
 `src/backend/tests/*.cpp` — tools covering projection (fwd, bwd,
 quant-grad), rasterization bwd, tile intersect, warp, FPBO, optimizer (general
 + geometry), densify, per-pixel train, PPISP, bilagrid, multi-scale loss, the

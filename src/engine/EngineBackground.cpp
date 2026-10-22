@@ -264,7 +264,7 @@ void _engine_background_forward() {
     render_background_sh_forward(
         W, H, engine().camera.model_str,
         engine().camera.distortion_str, bg.sh_degree,
-        vs.viewmats, vs.intrins, vs.dist_coeffs,
+        vs.viewmats, vs.intrins, CameraProjectionData(vs.dist_coeffs,engine().shutter.view),
         vs.sh_coeffs, bg_image_tv);
 
     DeviceTensor3D<float3> bg_image(bg_image_tv);
@@ -301,7 +301,7 @@ void _engine_background_chain_params(AppearanceChainParams& p) {
         BgShViews vs = _engine_bg_sh_views(C_batch);
         render_background_sh_forward(
             W, H, engine().camera.model_str, engine().camera.distortion_str,
-            bg.sh_degree, vs.viewmats, vs.intrins, vs.dist_coeffs,
+            bg.sh_degree, vs.viewmats, vs.intrins, CameraProjectionData(vs.dist_coeffs,engine().shutter.view),
             vs.sh_coeffs, _dt3d_tv(bg.fwd_background));
         p.bg = AppearanceBg::Image;
         p.bg_image = (const float*)bg.fwd_background.data_ptr();
@@ -331,7 +331,7 @@ void _engine_background_sh_backward(const float* v_background) {
     BgShViews vs = _engine_bg_sh_views(C_batch);
     render_background_sh_backward(
         W, H, engine().camera.model_str, engine().camera.distortion_str,
-        bg.sh_degree, vs.viewmats, vs.intrins, vs.dist_coeffs, vs.sh_coeffs,
+        bg.sh_degree, vs.viewmats, vs.intrins, CameraProjectionData(vs.dist_coeffs,engine().shutter.view), vs.sh_coeffs,
         _dt3d_tv(bg.fwd_background),
         TorchTensorView((uint64_t)v_background, 4,
                         {(int64_t)C_batch, (int64_t)H, (int64_t)W, 3LL}),
@@ -431,7 +431,7 @@ void _engine_background_backward_hook(
         render_background_sh_backward(
             W, H, engine().camera.model_str,
         engine().camera.distortion_str, bg.sh_degree,
-            vs.viewmats, vs.intrins, vs.dist_coeffs,
+            vs.viewmats, vs.intrins, CameraProjectionData(vs.dist_coeffs,engine().shutter.view),
             vs.sh_coeffs,
             bg_image_tv, v_bg_tv2,
             v_sh_tv);

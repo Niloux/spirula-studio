@@ -45,11 +45,12 @@ static_assert(sizeof(RgbToSrgbParams) == 3 * 8 + 2 * 4, "layout");
 // Mirrors DepthToNormalParams.
 struct DepthToNormalParams {
     uint64_t intrins, dist_coeffs, depths, normals;
+    uint64_t shutter;
     uint32_t W, H, B, is_ray_depth;
     int32_t camera_model;
     uint32_t _pad0;
 };
-static_assert(sizeof(DepthToNormalParams) == 4 * 8 + 6 * 4, "layout");
+static_assert(sizeof(DepthToNormalParams) == 5 * 8 + 6 * 4, "layout");
 
 }  // namespace
 
@@ -151,7 +152,7 @@ void depth_to_normal_forward(
     std::string camera_model,
     std::string distortion,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     bool is_ray_depth,
     DeviceTensor3D<float> depths,
     DeviceTensor3D<float3> normals
@@ -162,8 +163,9 @@ void depth_to_normal_forward(
     if (B * H * W == 0) return;
     DepthToNormalParams p{};
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
     p.depths = (uint64_t)depths.data_ptr();
+    p.shutter=(uint64_t)dist_coeffs.shutter.motion;
     p.normals = (uint64_t)normals.data_ptr();
     p.W = W;
     p.H = H;

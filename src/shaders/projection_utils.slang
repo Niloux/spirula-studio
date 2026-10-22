@@ -846,6 +846,29 @@ float3 undo_transform_ray_d(float3x3 R, float3 raydir) {
 }
 
 [CudaDeviceExport]
+[Differentiable]
+float3 shutter_inverse(float3 w, float3 p) {
+    return (p - cross(w, p) + w * dot(w, p)) / (1.0f + dot(w, w));
+}
+
+[CudaDeviceExport]
+void shutter_ray(float3x3 R, float3 t, float3 raydir, float3 rotation,
+                 float3 displacement, float s, out float3 origin, out float3 direction) {
+    origin = mul(s * displacement - t, R);
+    direction = mul(shutter_inverse(s * rotation, raydir), R);
+}
+
+[CudaDeviceExport]
+void shutter_ray_vjp(float3x3 R, float3 raydir, float3 rotation, float s,
+                     float3 v_origin, float3 v_direction,
+                     out float3 v_rotation, out float3 v_displacement) {
+    float3 q = shutter_inverse(s * rotation, raydir);
+    float3 g = mul(R, v_direction);
+    v_rotation = s * cross(shutter_inverse(-s * rotation, g), q);
+    v_displacement = s * mul(R, v_origin);
+}
+
+[CudaDeviceExport]
 void transform_ray_o_vjp(
     float3x3 R, float3 t, float3 v_ray_o,
     out float3x3 v_R, out float3 v_t

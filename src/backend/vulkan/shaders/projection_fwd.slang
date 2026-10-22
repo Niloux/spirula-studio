@@ -69,6 +69,7 @@ struct ProjectionFwdParams {
     float* viewmats;      // [C,16] row-major
     float4* intrins;      // [C]
     float* dist_coeffs;   // [C,8] or null
+    float* shutter;
     // outputs
     uint2* out_aabb;      // [C,N] packed, aabb16.slang
     float* out_depths;    // [C,N]
@@ -87,6 +88,23 @@ struct ProjectionFwdParams {
     uint32_t num_sh_buffer;
     uint32_t sb_base;     // float3 coefficient of the first lobe in a row
 };
+
+
+bool shutter_moving(float* motion,uint cid) {
+    if (is_null(motion)) return false;
+    float* m=motion+8*cid;
+    return any(float3(m[0],m[1],m[2])!=float3(0)) || any(float3(m[3],m[4],m[5])!=float3(0));
+}
+void shutter_projection<let cam: CameraModelType, D : ICameraDistortion>(
+    float* motion, uint cid, float3 mean, float4 quat, float3 scale, float in_opacity,
+    float3x3 R, float3 t, float4 intrin, float dist[D.kNumParams], uint width, uint height,
+    out float4 aabb, out float sorting_depth, out float radius, out float3 conic, out float opac) {
+    float* m = motion + 8 * cid;
+    shutter_projection_3dgut<cam, D>(mean, quat, scale, in_opacity, R, t,
+        intrin.x, intrin.y, intrin.z, intrin.w, dist, width, height,
+        float3(m[0], m[1], m[2]), float3(m[3], m[4], m[5]), m[7] != 0.0f,
+        aabb, sorting_depth, radius, conic, opac);
+}
 
 void run_projection<let cam: CameraModelType, D : ICameraDistortion>(
     ProjectionFwdParams p, uint idx) {
@@ -186,6 +204,7 @@ struct Projection3dgutParams {
     float* viewmats;
     float4* intrins;
     float* dist_coeffs;
+    float* shutter;
     uint2* out_aabb;      // packed, aabb16.slang
     float* out_depths;
     uint32_t* out_radii;
@@ -242,6 +261,9 @@ void run_projection_3dgut<let cam: CameraModelType, D : ICameraDistortion>(
         intrin.x, intrin.y, intrin.z, intrin.w, dist,
         p.width, p.height,
         aabb, sorting_depth, radius, xy, depth, s_scale, s_opac);
+    if (shutter_moving(p.shutter, cid))
+        shutter_projection<cam, D>(p.shutter, cid, mean, quat, scale, in_opacity, R, t,
+            intrin, dist, p.width, p.height, aabb, sorting_depth, radius, s_scale, s_opac);
 
     float3 rgb = float3(0.0f);
     if (aabb.z > aabb.x && aabb.w > aabb.y)
@@ -298,6 +320,7 @@ struct PackedMaskParams {  // fits in the 128-byte push floor: pushed direct
     float* viewmats;
     float4* intrins;
     float* dist_coeffs;
+    float* shutter;
     uint* out_bits;      // [wgs * SS_PMASK_WORDS] visibility bitmask
     int* out_counts;     // [wgs] popcount of this workgroup's bits
     uint32_t C;
@@ -348,6 +371,9 @@ bool run_packed_mask<let cam: CameraModelType, D : ICameraDistortion,
         intrin.x, intrin.y, intrin.z, intrin.w, dist,
         p.width, p.height,
         aabb, sorting_depth, radius, xy, depth, conic, opac);
+    if (eval3d && shutter_moving(p.shutter, cid))
+        shutter_projection<cam, D>(p.shutter, cid, mean, quat, scale, in_opacity, R, t,
+            intrin, dist, p.width, p.height, aabb, sorting_depth, radius, conic, opac);
 
     aabb.x = clamp(aabb.x, 0.0f, float(p.width) - 1.0f);
     aabb.y = clamp(aabb.y, 0.0f, float(p.height) - 1.0f);
@@ -407,6 +433,7 @@ struct PackedFwdParams {
     float* viewmats;
     float4* intrins;
     float* dist_coeffs;
+    float* shutter;
     uint* mask_bits;        // [wgs * SS_PMASK_WORDS] visibility bitmask
     int* block_scan;        // [wgs] inclusive scan of the workgroup counts
     int* out_camera_ids;    // [nnz]
@@ -467,6 +494,9 @@ void run_packed_fwd<let cam: CameraModelType, D : ICameraDistortion,
         intrin.x, intrin.y, intrin.z, intrin.w, dist,
         p.width, p.height,
         aabb, sorting_depth, radius, xy, depth, conic, opac);
+    if (eval3d && shutter_moving(p.shutter, cid))
+        shutter_projection<cam, D>(p.shutter, cid, mean, quat, scale, in_opacity, R, t,
+            intrin, dist, p.width, p.height, aabb, sorting_depth, radius, conic, opac);
 
     float3 rgb = float3(0.0f);
     if (aabb.z > aabb.x && aabb.w > aabb.y)

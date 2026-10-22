@@ -26,7 +26,7 @@ void rasterize_to_pixels_eval3d_fwd_kernel_wrapper(
     const typename SplatPrimitive::ScreenBuffer splat_sbuffer,
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed AABB
     const uint32_t image_width,
     const uint32_t image_height,
@@ -56,7 +56,7 @@ inline void launch_rasterize_to_pixels_eval3d_fwd_kernel(
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,
@@ -130,7 +130,7 @@ inline std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,
@@ -200,7 +200,7 @@ std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB, for sub-tile culling
     // image size
     const uint32_t image_width,

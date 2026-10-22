@@ -95,6 +95,7 @@ void set_camera_params(
     TorchTensorView intrins,
     TorchTensorView dist_coeffs
 ) {
+    engine().shutter.view = {};
     engine().camera.width = width;
     engine().camera.height = height;
     engine().camera.model = cmt(camera_model);

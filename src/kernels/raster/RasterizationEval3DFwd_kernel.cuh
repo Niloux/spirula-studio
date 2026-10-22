@@ -70,7 +70,7 @@ __global__ void rasterize_to_pixels_fwd_kernel(
 #if IS_EVAL3D
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed, core/AabbQuant.cuh
 #endif
     const uint32_t image_width,
@@ -135,6 +135,13 @@ __global__ void rasterize_to_pixels_fwd_kernel(
         &raydir
     );
     float3 ray_d = SlangProjectionUtils::transform_ray_d(R, raydir);
+    if (dist_coeffs_buffer.shutter.motion) {
+        const float* m = dist_coeffs_buffer.shutter.motion + image_id * 8;
+        float s = m[7] == 0 ? (px / image_width - .5f) : (py / image_height - .5f);
+        SlangProjectionUtils::shutter_ray(R, t, raydir,
+            make_float3(m[0],m[1],m[2]), make_float3(m[3],m[4],m[5]), s, &ray_o, &ray_d);
+    }
+
 #endif
 
     bool done = !inside;
@@ -353,7 +360,7 @@ void rasterize_to_pixels_fwd_kernel_wrapper(
 #if IS_EVAL3D
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed, core/AabbQuant.cuh
 #endif
     const uint32_t image_width,

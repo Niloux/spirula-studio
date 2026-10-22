@@ -58,10 +58,11 @@ static_assert(sizeof(OverexposureParams) == 2 * 8 + 4 * 4, "layout");
 // Mirrors DepthToNormalBwdParams.
 struct DepthToNormalBwdParams {
     uint64_t intrins, dist_coeffs, depths, v_normals, v_depths;
+    uint64_t shutter, v_shutter;
     uint32_t W, H, B, is_ray_depth;
     int32_t camera_model;
 };
-static_assert(sizeof(DepthToNormalBwdParams) == 5 * 8 + 5 * 4 + 4 /*pad*/,
+static_assert(sizeof(DepthToNormalBwdParams) == 7 * 8 + 5 * 4 + 4 /*pad*/,
               "layout");
 
 // Mirrors LinToRayDepthParams.
@@ -241,7 +242,7 @@ void depth_to_normal_backward(
     std::string camera_model,
     std::string distortion,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     bool is_ray_depth,
     DeviceTensor3D<float> depths,
     DeviceTensor3D<float3> v_normals,
@@ -253,8 +254,10 @@ void depth_to_normal_backward(
     if (B * H * W == 0) return;
     DepthToNormalBwdParams p{};
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
     p.depths = (uint64_t)depths.data_ptr();
+    p.shutter=(uint64_t)dist_coeffs.shutter.motion;
+    p.v_shutter=(uint64_t)dist_coeffs.shutter.gradient;
     p.v_normals = (uint64_t)v_normals.data_ptr();
     p.v_depths = (uint64_t)v_depths.data_ptr();
     p.W = W;

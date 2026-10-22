@@ -190,6 +190,14 @@ struct CameraDistortionCoeffsBuffer {
     #endif
 };
 
+#include "core/RollingShutter.cuh"
+
+struct CameraProjectionData : CameraDistortionCoeffsBuffer {
+    RollingShutterView shutter;
+    CameraProjectionData(const TorchTensorView& tensor, RollingShutterView rs = {})
+        : CameraDistortionCoeffsBuffer(tensor), shutter(rs) {}
+};
+
 inline CameraModelType cmt(const std::string &s) {
     return (s == "PINHOLE") ? CameraModelType::PINHOLE :
         (s == "FISHEYE") ? CameraModelType::FISHEYE :

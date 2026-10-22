@@ -45,13 +45,14 @@ struct Raster3dgutBwdParams {
         v_dist_depth;
     uint64_t v_means, v_quats, v_scales, v_s_screen;
     uint64_t o_accum_weight, o_accum_weight_den, o_max_weight, v_viewmats;
+    uint64_t shutter, v_shutter;
     uint32_t I, N, n_isects, width, height, tile_width, tile_height, macro_log2;
     float v_dist_rgb_per_depth;
     uint32_t state_flags;
     float max_weight_scale;
     uint32_t _pad0;
 };
-static_assert(sizeof(Raster3dgutBwdParams) == 32 * 8 + 12 * 4,
+static_assert(sizeof(Raster3dgutBwdParams) == 34 * 8 + 12 * 4,
               "params layout must match the slang struct");
 
 uint32_t dist_spec_bwd(DistortionType dist_type) {
@@ -233,7 +234,7 @@ std::tuple<
     TorchTensorView intrins,
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,
     const uint32_t image_width,
     const uint32_t image_height,
@@ -278,6 +279,9 @@ std::tuple<
     if (!v_splats_s.has_value())
         v_splats_s = Vanilla3DGUT<0>::ScreenBuffer::zeros_pool(
             splats_s, PoolSlot::RasterBwdVScreen);
+    // Readout rays replace the pose's ray origin; the pose gradient tail assumes the global one.
+    if (need_viewmat_grad && dist_coeffs.shutter.motion)
+        throw std::runtime_error("Pose gradients are not available with rolling-shutter cameras");
     DeviceTensor2D<float> v_viewmats_buf;
     if (need_viewmat_grad) {
         auto& shape = std::get<2>(viewmats);
@@ -312,7 +316,7 @@ std::tuple<
         p.gaussian_ids = vkk::or_fallback(gaussian_ids.data_ptr());
         p.viewmats = std::get<0>(viewmats);
         p.intrins = std::get<0>(intrins);
-        p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+        p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
         p.aabb = (uint64_t)aabb.data_ptr();
         p.tile_offsets = (uint64_t)tile_offsets.data_ptr();
         p.flatten_ids = (uint64_t)flatten_ids.data_ptr();
@@ -358,6 +362,8 @@ std::tuple<
         p.o_max_weight = vkk::or_fallback(max_weight.data_ptr());
         p.max_weight_scale = max_weight_scale;
         p.v_viewmats = vkk::or_fallback(v_viewmats_buf.data_ptr());
+        p.shutter = (uint64_t)dist_coeffs.shutter.motion;
+        p.v_shutter = (uint64_t)dist_coeffs.shutter.gradient;
         p.I = I;
         p.N = packed ? 0u : (uint32_t)num_splats;
         p.n_isects = n_isects;
@@ -372,7 +378,7 @@ std::tuple<
         backend::vk::SpecList spec{
             cd.cam,         spec_dist,
             md ? 1u : 0u,   (uint32_t)accum_mode,
-            need_viewmat_grad ? 1u : 0u, packed ? 1u : 0u,
+            (need_viewmat_grad || dist_coeffs.shutter.gradient) ? 1u : 0u, packed ? 1u : 0u,
             mw ? 1u : 0u,   cd.dist};
         vkk::dispatch_ring_budgeted(
             "rasterize_bwd.rasterize_bwd_3dgut", spec, I,

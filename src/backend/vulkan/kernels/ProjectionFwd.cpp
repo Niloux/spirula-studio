@@ -13,7 +13,7 @@ namespace {
 // Mirrors ProjectionFwdParams in shaders/projection_fwd.slang.
 struct ProjectionFwdParams {
     uint64_t means, quats, scales, opacities, features_dc, features_sh;
-    uint64_t viewmats, intrins, dist_coeffs;
+    uint64_t viewmats, intrins, dist_coeffs, shutter;
     uint64_t out_aabb, out_depths, out_radii;
     uint64_t s_screen;
     uint64_t sh_packed, sh_bounds;
@@ -25,13 +25,13 @@ struct ProjectionFwdParams {
     uint32_t num_sh_buffer;
     uint32_t sb_base;
 };
-static_assert(sizeof(ProjectionFwdParams) == 16 * 8 + 8 * 4,
+static_assert(sizeof(ProjectionFwdParams) == 17 * 8 + 8 * 4,
               "params layout must match the slang struct");
 
 // Mirrors Projection3dgutParams in shaders/projection_fwd.slang.
 struct Projection3dgutParams {
     uint64_t means, quats, scales, opacities, features_dc, features_sh;
-    uint64_t viewmats, intrins, dist_coeffs;
+    uint64_t viewmats, intrins, dist_coeffs, shutter;
     uint64_t out_aabb, out_depths, out_radii;
     uint64_t s_screen;
     uint64_t sh_packed, sh_bounds;
@@ -43,7 +43,7 @@ struct Projection3dgutParams {
     uint32_t num_sh_buffer;
     uint32_t sb_base;
 };
-static_assert(sizeof(Projection3dgutParams) == 16 * 8 + 8 * 4,
+static_assert(sizeof(Projection3dgutParams) == 17 * 8 + 8 * 4,
               "params layout must match the slang struct");
 
 using vkk::resolve_sh_quant;
@@ -58,7 +58,7 @@ launch_projection_fwd_vk(
     TorchTensorView viewmats, TorchTensorView intrins,
     const uint32_t image_width, const uint32_t image_height,
     const std::string& camera_model, const std::string& distortion,
-    const TorchTensorView& dist_coeffs,
+    const CameraProjectionData& dist_coeffs,
     DeviceVector<float>& radii,
     const std::optional<TorchTensorView>& sh_value_packed,
     const std::optional<TorchTensorView>& sh_value_bounds,
@@ -104,7 +104,8 @@ launch_projection_fwd_vk(
     p.sh_stride = (uint32_t)wb.raw_stride(5);
     p.viewmats = std::get<0>(viewmats);
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
+    p.shutter = (uint64_t)dist_coeffs.shutter.motion;
     p.out_aabb = (uint64_t)aabb.data_ptr();
     p.out_depths = (uint64_t)sorting_depths.data_ptr();
     p.out_radii = (uint64_t)radii.data_ptr();
@@ -141,7 +142,7 @@ std::tuple<
     TorchTensorView viewmats, TorchTensorView intrins,
     const uint32_t image_width, const uint32_t image_height,
     const std::string camera_model, const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,
@@ -164,7 +165,7 @@ std::tuple<
     TorchTensorView viewmats, TorchTensorView intrins,
     const uint32_t image_width, const uint32_t image_height,
     const std::string camera_model, const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,
@@ -187,7 +188,7 @@ std::tuple<
     TorchTensorView viewmats, TorchTensorView intrins,
     const uint32_t image_width, const uint32_t image_height,
     const std::string camera_model, const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,
@@ -235,7 +236,8 @@ std::tuple<
     p.sh_stride = (uint32_t)wb.raw_stride(5);
     p.viewmats = std::get<0>(viewmats);
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
+    p.shutter = (uint64_t)dist_coeffs.shutter.motion;
     p.out_aabb = (uint64_t)aabb.data_ptr();
     p.out_depths = (uint64_t)sorting_depths.data_ptr();
     p.out_radii = (uint64_t)radii.data_ptr();

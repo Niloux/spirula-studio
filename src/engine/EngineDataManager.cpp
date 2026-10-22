@@ -507,6 +507,9 @@ static void _install_batch(const DecodedBatch& b, bool with_geometry,
                           camera_model_to_string(b.model),
                           camera_distortion_to_string(b.distortion),
                           b.viewmats_view, b.intrins_view, b.dist_coeffs_view);
+        std::vector<int32_t> shutter_ids(b.num);
+        for (int i=0;i<b.num;++i) shutter_ids[i]=b.post_offsets[i];
+        engine_shutter_bind(TorchTensorView((uint64_t)shutter_ids.data(),4,{(int64_t)shutter_ids.size(),1LL}),false);
         set_training_data(b.rgb_view,
                           geom ? b.depth_view : _tv_null(),
                           geom ? b.normal_view : _tv_null(),

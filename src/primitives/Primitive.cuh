@@ -378,6 +378,7 @@ struct ProjCameraT {
     float fx, fy, cx, cy;
     uint width, height;
     CameraDistortionCoeffsT<D> dist_coeffs;
+    RollingShutterView shutter;
 };
 
 #endif

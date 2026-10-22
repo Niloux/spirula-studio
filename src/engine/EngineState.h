@@ -8,6 +8,7 @@
 #include "core/ColorBasis.h"
 #include "core/PixelFormat.h"
 #include "core/Tensor.h"
+#include "engine/EngineShutter.h"
 
 #include "kernels/background/BackgroundSphericalHarmonics.cuh"
 #include "kernels/bilagrid/BilagridUtils.cuh"
@@ -666,6 +667,7 @@ struct EngineState {
 
     WorldSplats    world;
     CameraTable    camera;
+    ShutterState   shutter;
     ForwardCache   fwd;
     GTData         gt;
     SplatGrad      grad;

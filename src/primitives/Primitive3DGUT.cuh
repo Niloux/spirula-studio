@@ -57,16 +57,28 @@ struct Vanilla3DGUT : public _BasePrimitive3DGUT<sh_degree> {
             int64_t  sh_bounds_stride = 256,
             int64_t  sh_pair_pitch = 0
         ) {
-            float2 xy;
-            float depth;
-            Slang3DGSProj<camera_model, distortion>::fwd_3d(
-                false,
-                this->mean, this->quat, this->scale, this->opacity,
-                cam.R, cam.t, cam.fx, cam.fy, cam.cx, cam.cy,
-                cam.dist_coeffs.v,
-                cam.width, cam.height,
-                &aabb, &sorting_depth, &radius, &xy, &depth, &proj.scale, &proj.opacity
-            );
+            if (cam.shutter.moving()) {
+                const float* m = cam.shutter.motion;
+                Slang3DGSProj<camera_model, distortion>::fwd_rolling_shutter(
+                    this->mean, this->quat, this->scale, this->opacity,
+                    cam.R, cam.t, cam.fx, cam.fy, cam.cx, cam.cy,
+                    cam.dist_coeffs.v,
+                    cam.width, cam.height,
+                    make_float3(m[0], m[1], m[2]), make_float3(m[3], m[4], m[5]), m[7] != 0.0f,
+                    &aabb, &sorting_depth, &radius, &proj.scale, &proj.opacity
+                );
+            } else {
+                float2 xy;
+                float depth;
+                Slang3DGSProj<camera_model, distortion>::fwd_3d(
+                    false,
+                    this->mean, this->quat, this->scale, this->opacity,
+                    cam.R, cam.t, cam.fx, cam.fy, cam.cx, cam.cy,
+                    cam.dist_coeffs.v,
+                    cam.width, cam.height,
+                    &aabb, &sorting_depth, &radius, &xy, &depth, &proj.scale, &proj.opacity
+                );
+            }
             if (aabb.z > aabb.x && aabb.w > aabb.y) {
                 if constexpr (VALUE_BITS == 32) {
                     if constexpr (sh_degree == 0) proj.rgb = SlangHarmonics::sh0_to_color

@@ -14,17 +14,17 @@ namespace {
 // Mirrors PackedMaskParams in shaders/projection_fwd.slang.
 struct PackedMaskParams {
     uint64_t means, quats, scales, opacities;
-    uint64_t viewmats, intrins, dist_coeffs;
+    uint64_t viewmats, intrins, dist_coeffs, shutter;
     uint64_t out_bits, out_counts;
     uint32_t C, N, width, height, wgs_per_row;
 };
-static_assert(sizeof(PackedMaskParams) == 9 * 8 + 5 * 4 + 4 /*pad*/,
+static_assert(sizeof(PackedMaskParams) == 10 * 8 + 5 * 4 + 4 /*pad*/,
               "params layout must match the slang struct");
 
 // Mirrors PackedFwdParams in shaders/projection_fwd.slang.
 struct PackedFwdParams {
     uint64_t means, quats, scales, opacities, features_dc, features_sh;
-    uint64_t viewmats, intrins, dist_coeffs;
+    uint64_t viewmats, intrins, dist_coeffs, shutter;
     uint64_t mask_bits, block_scan;
     uint64_t out_camera_ids, out_gaussian_ids, out_aabb, out_depths,
         out_radii;
@@ -36,7 +36,7 @@ struct PackedFwdParams {
     uint32_t num_sh_buffer;
     uint32_t sb_base;
 };
-static_assert(sizeof(PackedFwdParams) == 20 * 8 + 8 * 4,
+static_assert(sizeof(PackedFwdParams) == 21 * 8 + 8 * 4,
               "params layout must match the slang struct");
 
 using vkk::resolve_sh_quant;
@@ -51,7 +51,7 @@ launch_projection_packed_vk(
     TorchTensorView viewmats, TorchTensorView intrins,
     const uint32_t image_width, const uint32_t image_height,
     const std::string& camera_model, const std::string& distortion,
-    const TorchTensorView& dist_coeffs,
+    const CameraProjectionData& dist_coeffs,
     DeviceVector<float>& radii,
     const std::optional<TorchTensorView>& sh_value_packed,
     const std::optional<TorchTensorView>& sh_value_bounds,
@@ -94,7 +94,8 @@ launch_projection_packed_vk(
     mp.opacities = (uint64_t)wb.raw_data(3);
     mp.viewmats = std::get<0>(viewmats);
     mp.intrins = std::get<0>(intrins);
-    mp.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    mp.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
+    mp.shutter = (uint64_t)dist_coeffs.shutter.motion;
     mp.out_bits = (uint64_t)mask_bits.data_ptr();
     mp.out_counts = (uint64_t)block_counts.data_ptr();
     mp.C = C;
@@ -148,6 +149,7 @@ launch_projection_packed_vk(
         p.viewmats = mp.viewmats;
         p.intrins = mp.intrins;
         p.dist_coeffs = mp.dist_coeffs;
+        p.shutter = (uint64_t)dist_coeffs.shutter.motion;
         p.mask_bits = (uint64_t)mask_bits.data_ptr();
         p.block_scan = (uint64_t)block_scan.data_ptr();
         p.out_camera_ids = (uint64_t)camera_ids.data_ptr();
@@ -199,7 +201,7 @@ std::tuple<                                                                  \
     const uint32_t image_height,                                             \
     const std::string camera_model,                                          \
     const std::string distortion,                                            \
-    const TorchTensorView dist_coeffs,                                       \
+    const CameraProjectionData dist_coeffs,                                       \
     DeviceVector<float> radii,                                               \
     const std::optional<TorchTensorView> sh_value_packed,                    \
     const std::optional<TorchTensorView> sh_value_bounds,                    \

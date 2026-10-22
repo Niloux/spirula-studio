@@ -271,7 +271,7 @@ void engine_copy_render_depth_normal_to_host(TorchTensorView out) {
     // depth whatever the primitive.
     depth_to_normal_forward(
         engine().camera.model_str, engine().camera.distortion_str,
-        _dv_tv(engine().camera.intrins), _dt2d_tv(engine().camera.dist_coeffs),
+        _dv_tv(engine().camera.intrins), CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs),engine().shutter.view),
         /*is_ray_depth=*/true, DeviceTensor3D<float>(_dt3d_tv(depth)),
         DeviceTensor3D<float3>(normal));
     backend::memcpy_sync((void*)std::get<0>(out),

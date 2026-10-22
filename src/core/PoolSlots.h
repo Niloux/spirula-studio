@@ -262,6 +262,8 @@ enum class SaveClass : uint8_t {
   /* ---- bilagrid shared ---- */ \
   X(EngBgCamIndices                , "eng.bg.cam_indices",                Appearance, Never) \
   X(EngBgTvReadout                 , "eng.bg.tv_readout",                 Appearance, Never) \
+  X(EngShutterMotion               , "eng.shutter.motion",                Appearance, Never) \
+  X(EngShutterGradient             , "eng.shutter.gradient",              Appearance, Never) \
   /* ---- background-SH ---- */ \
   X(EngBgSkyShCoeffs               , "eng.bg_sky.sh_coeffs",              Appearance, Always) \
   X(EngBgSkyG1                     , "eng.bg_sky.g1",                     Appearance, Resume) \

@@ -38,14 +38,16 @@ struct BgCamera {
     float3x3 R;            // world->camera (slang convention)
     float fx, fy, cx, cy;
     typename SlangDistortion<distortion>::Coeffs dist;
+    RollingShutterView shutter;
+    int width,height;
 };
 
 template<CameraDistortionType distortion>
 static __device__ __forceinline__ BgCamera<distortion> _load_bg_camera(
     const float*  viewmats,    // [N_cam, 16] row-major
     const float4* intrins,     // [N_cam]
-    const CameraDistortionCoeffsBuffer& dist_coeffs,
-    int cam
+    const CameraProjectionData& dist_coeffs,
+    int cam, int w, int h
 ) {
     const float* vm = viewmats + (int64_t)cam * 16;
     BgCamera<distortion> c;
@@ -57,6 +59,7 @@ static __device__ __forceinline__ BgCamera<distortion> _load_bg_camera(
     float4 intr = intrins[cam];
     c.fx = intr.x; c.fy = intr.y; c.cx = intr.z; c.cy = intr.w;
     c.dist = dist_coeffs.load<distortion>(cam);
+    c.shutter=dist_coeffs.shutter.camera(cam); c.width=w; c.height=h;
     return c;
 }
 
@@ -74,6 +77,11 @@ static __device__ __forceinline__ bool _bg_pixel_world_ray(
     float3 raydir;
     if (!SlangDistortion<distortion>::generate_ray(uv, camera_model, c.dist, &raydir))
         return false;
+    if (c.shutter.motion) {
+        const float* m=c.shutter.motion;
+        float s=m[7]==0 ? (float(px)+.5f)/c.width-.5f : (float(py)+.5f)/c.height-.5f;
+        raydir=normalize(SlangProjectionUtils::shutter_inverse(s*make_float3(m[0],m[1],m[2]),raydir));
+    }
     out_world_dir = SlangProjectionUtils::transform_ray_d(c.R, raydir);
     return true;
 }
@@ -87,7 +95,7 @@ __global__ void render_background_sh_forward_kernel(
     int camera_model,
     const float*  __restrict__ viewmats,    // [B, 16] (per-batch image)
     const float4* __restrict__ intrins,     // [B]
-    const CameraDistortionCoeffsBuffer dist_coeffs,  // [B, 8]
+    const CameraProjectionData dist_coeffs,  // [B, 8]
     const float3* __restrict__ sh_coeffs,   // [(SH_DEGREE+1)^2]
     float3*       __restrict__ out_img      // [B, H, W]
 ) {
@@ -102,7 +110,7 @@ __global__ void render_background_sh_forward_kernel(
     // we index directly by bi — NOT by some global camera id. Indexing by
     // `cam_indices[bi]` (the global-cam-id pattern used by bilagrid/PPISP) is
     // wrong here: that would read past the buffer's [B] worth of entries.
-    auto c = _load_bg_camera<distortion>(viewmats, intrins, dist_coeffs, (int)bi);
+    auto c = _load_bg_camera<distortion>(viewmats, intrins, dist_coeffs, (int)bi, img_size.x,img_size.y);
 
     float3 world_dir;
     if (!_bg_pixel_world_ray<distortion>(c, camera_model, (int)px, (int)py, world_dir)) {
@@ -140,7 +148,7 @@ __global__ void __launch_bounds__(512) render_background_sh_backward_kernel(
     int camera_model,
     const float*  __restrict__ viewmats,    // [B, 16]
     const float4* __restrict__ intrins,     // [B]
-    const CameraDistortionCoeffsBuffer dist_coeffs,  // [B, 8]
+    const CameraProjectionData dist_coeffs,  // [B, 8]
     const float3* __restrict__ sh_coeffs,
     const float3* __restrict__ out_color,
     const float3* __restrict__ v_out_color,
@@ -165,7 +173,7 @@ __global__ void __launch_bounds__(512) render_background_sh_backward_kernel(
     }
 
     // See forward kernel: index directly by bi (per-batch buffers).
-    auto c = _load_bg_camera<distortion>(viewmats, intrins, dist_coeffs, inside ? (int)bi : 0);
+    auto c = _load_bg_camera<distortion>(viewmats, intrins, dist_coeffs, inside ? (int)bi : 0,img_size.x,img_size.y);
 
     float3 world_dir = {0.0f, 0.0f, 1.0f};
     if (inside) {
@@ -213,9 +221,22 @@ __global__ void __launch_bounds__(512) render_background_sh_backward_kernel(
     // DC gradient: block-reduce one float3 atomic to the global table.
     atomicAddFVec<512>(&v_sh_coeffs[0], v_dc);
 
-    // Camera gradient is not currently propagated (engine path holds cameras
-    // fixed; v_dir is discarded). A v_viewmats output can be added later via
-    // SlangProjectionUtils::transform_ray_d_vjp.
+    float3 vw=make_float3(0.0f);
+    if (inside && c.shutter.gradient) {
+        const float* m=c.shutter.motion;
+        float fraction=m[7]==0 ? (float(px)+.5f)/c.width-.5f : (float(py)+.5f)/c.height-.5f;
+        float3 w=make_float3(m[0],m[1],m[2]);
+        float3 local=SlangProjectionUtils::undo_transform_ray_d(c.R,world_dir);
+        float3 reference=normalize(local+cross(fraction*w,local));
+        float3 vt;
+        float n=length(SlangProjectionUtils::shutter_inverse(fraction*w,reference));
+        float3 raw_grad=(v_dir-world_dir*dot(world_dir,v_dir))/n;
+        SlangProjectionUtils::shutter_ray_vjp(c.R,reference,w,fraction,make_float3(0),raw_grad,&vw,&vt);
+    }
+    // Every pixel of an image adds into the same three floats.
+    if (dist_coeffs.shutter.gradient)
+        warpAtomicAdd((float3*)(dist_coeffs.shutter.gradient+8*bi),vw);
+
 }
 
 
@@ -227,7 +248,7 @@ template<CameraDistortionType D>
 static void _launch_bg_sh_forward(
     int sh_degree, dim3 img_size, int cm, int w, int h, int64_t b,
     const float* p_vm, const float4* p_intrins,
-    const CameraDistortionCoeffsBuffer& p_dist,
+    const CameraProjectionData& p_dist,
     const float3* p_sh_coeffs, float3* p_out
 ) {
     #define LAUNCH(DEG) \
@@ -248,7 +269,7 @@ template<CameraDistortionType D>
 static void _launch_bg_sh_backward(
     int sh_degree, dim3 img_size, int cm, int w, int h, int64_t b,
     const float* p_vm, const float4* p_intrins,
-    const CameraDistortionCoeffsBuffer& p_dist,
+    const CameraProjectionData& p_dist,
     const float3* p_sh_coeffs, const float3* p_out_color,
     const float3* p_v_out_color, float3* p_v_sh
 ) {
@@ -300,7 +321,7 @@ void render_background_sh_forward(
     int sh_degree,                       // actual SH degree (0..4)
     TorchTensorView viewmats,            // [B, 4, 4] row-major world->camera (per-batch)
     TorchTensorView intrins,             // [B, 4]
-    TorchTensorView dist_coeffs,         // [B, 8]; null/empty -> zeros
+    CameraProjectionData dist_coeffs,         // [B, 8]; null/empty -> zeros
     TorchTensorView sh_coeffs,           // [(sh_degree+1)^2, 3]
     TorchTensorView out_color            // [B, H, W, 3]  pre-allocated
 ) {
@@ -316,8 +337,7 @@ void render_background_sh_forward(
     const dim3 img_size = {(uint32_t)w, (uint32_t)h, (uint32_t)b};
     const float*  p_vm        = (const float*)std::get<0>(viewmats);
     const float4* p_intrins   = (const float4*)std::get<0>(intrins);
-    const CameraDistortionCoeffsBuffer p_dist(
-        (float*)std::get<0>(dist_coeffs));  // null -> zero default
+    const CameraProjectionData p_dist=dist_coeffs;
     const float3* p_sh_coeffs = (const float3*)std::get<0>(sh_coeffs);
     float3*       p_out       = (float3*)std::get<0>(out_color);
 
@@ -341,7 +361,7 @@ void render_background_sh_backward(
     int sh_degree,
     TorchTensorView viewmats,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     TorchTensorView sh_coeffs,
     TorchTensorView out_color,
     TorchTensorView v_out_color,
@@ -365,7 +385,7 @@ void render_background_sh_backward(
     const dim3 img_size = {(uint32_t)w, (uint32_t)h, (uint32_t)b};
     const float*  p_vm          = (const float*)std::get<0>(viewmats);
     const float4* p_intrins     = (const float4*)std::get<0>(intrins);
-    const CameraDistortionCoeffsBuffer p_dist((float*)std::get<0>(dist_coeffs));
+    const CameraProjectionData p_dist=dist_coeffs;
     const float3* p_sh_coeffs   = (const float3*)std::get<0>(sh_coeffs);
     const float3* p_out_color   = (const float3*)std::get<0>(out_color);
     const float3* p_v_out_color = (const float3*)std::get<0>(v_out_color);

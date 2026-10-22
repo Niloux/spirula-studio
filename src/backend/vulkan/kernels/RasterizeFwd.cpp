@@ -29,7 +29,7 @@ static_assert(sizeof(RasterFwd2dParams) == 11 * 8 + 8 * 4,
 struct RasterFwd3dgutParams {
     uint64_t means, quats, scales, gaussian_ids;
     uint64_t s_screen;
-    uint64_t viewmats, intrins, dist_coeffs, aabb;
+    uint64_t viewmats, intrins, dist_coeffs, aabb, shutter;
     uint64_t tile_offsets, flatten_ids;
     uint64_t out_rgb, out_depth, out_T, out_last_ids;
     uint64_t dist_rgb, dist_depth, out_median;
@@ -38,7 +38,7 @@ struct RasterFwd3dgutParams {
         macro_log2;
     uint32_t out_depth_on, _pad0;
 };
-static_assert(sizeof(RasterFwd3dgutParams) == 19 * 8 + 10 * 4,
+static_assert(sizeof(RasterFwd3dgutParams) == 20 * 8 + 10 * 4,
               "params layout must match the slang struct");
 
 // Mirrors RasterScoreIO in shaders/rasterize_fwd.slang.
@@ -280,7 +280,7 @@ std::tuple<
     TorchTensorView intrins,  // [..., C, 4], fx, fy, cx, cy
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceTensor2D<uint2> aabb,  // [..., N] projected 2D AABB
     const uint32_t image_width,
     const uint32_t image_height,
@@ -313,8 +313,9 @@ std::tuple<
     p.s_screen = (uint64_t)sb.raw_data();
     p.viewmats = std::get<0>(viewmats);
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
     p.aabb = (uint64_t)aabb.data_ptr();
+    p.shutter = (uint64_t)dist_coeffs.shutter.motion;
     p.tile_offsets = (uint64_t)tile_offsets.data_ptr();
     p.flatten_ids = (uint64_t)flatten_ids.data_ptr();
     p.out_rgb = (uint64_t)std::get<0>(o.renders).data_ptr();

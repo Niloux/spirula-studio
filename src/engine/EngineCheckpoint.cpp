@@ -373,6 +373,13 @@ void engine_save_checkpoint(
         ckpt::tar_write_npy_device(tar, sl.name + ".npy",
                                    sl.ptr, sl.nbytes, sl.dtype_tag, host_stage);
     }
+    const std::string shutter = engine_shutter_save();
+    if (!shutter.empty()) {
+        ckpt::tar_write_bytes(tar,"rolling_shutter.json",shutter.data(),shutter.size());
+        std::ofstream file(out_root/"rolling_shutter.json",std::ios::binary);
+        file << shutter;
+        if (!file) throw std::runtime_error("Cannot save rolling-shutter state");
+    }
     ckpt::tar_finish(tar);
 }
 
@@ -482,6 +489,10 @@ int engine_load_checkpoint(std::string input_dir) {
         ++restored;
     }
 
+    std::string shutter;
+    for (const auto& member : members)
+        if (member.name == "rolling_shutter.json") shutter=ckpt::tar_read_member(in,member);
+    engine_shutter_restore(shutter);
     backend::device_synchronize();
     return step;
 }

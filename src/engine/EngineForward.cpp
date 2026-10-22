@@ -282,7 +282,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             cam_ids = a; gauss_ids = b; aabb_vec = c; depths_vec = d;
@@ -293,7 +293,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             cam_ids = a; gauss_ids = b; aabb_vec = c; depths_vec = d;
@@ -304,7 +304,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             cam_ids = a; gauss_ids = b; aabb_vec = c; depths_vec = d;
@@ -328,7 +328,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             aabb_2d = a; depths_2d = b;
@@ -339,7 +339,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             aabb_2d = a; depths_2d = b;
@@ -350,7 +350,7 @@ void forward_3dgs(
                 _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
                 (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
                 engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
                 engine().optim.radii,
                 sh_value_packed_opt, sh_value_bounds_opt, num_sh_buffer, sh_value_bits, sh_bounds_stride);
             aabb_2d = a; depths_2d = b;
@@ -454,7 +454,7 @@ void forward_3dgs(
             in_splats, engine().fwd.splats_s, engine().fwd.gaussian_ids,
             _dt2d_tv(engine().camera.viewmats), _dv_tv(engine().camera.intrins),
             engine().camera.model_str,
-        engine().camera.distortion_str, _dt2d_tv(engine().camera.dist_coeffs),
+        engine().camera.distortion_str, CameraProjectionData(_dt2d_tv(engine().camera.dist_coeffs), engine().shutter.view),
             engine().fwd.aabb,
             (uint32_t)engine().camera.width, (uint32_t)engine().camera.height,
             tile_offsets, flatten_ids, engine().fwd.macro_log2,

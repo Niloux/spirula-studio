@@ -1,4 +1,6 @@
+#pragma once
 #include "core/Tensor.h"
+#include "core/Common.cuh"
 
 #include "backend/api/BackendTypes.h"
 #include <cstdint>
@@ -17,7 +19,7 @@ void render_background_sh_forward(
     int sh_degree,                       // actual SH degree (0..4)
     TorchTensorView viewmats,            // [B, 4, 4] row-major world->camera (per-batch)
     TorchTensorView intrins,             // [B, 4]
-    TorchTensorView dist_coeffs,         // [B, 8]; null/empty -> zeros
+    CameraProjectionData dist_coeffs,         // [B, 8]; null/empty -> zeros
     TorchTensorView sh_coeffs,           // [(sh_degree+1)^2, 3]
     TorchTensorView out_color            // [B, H, W, 3]  pre-allocated
 );
@@ -31,7 +33,7 @@ void render_background_sh_backward(
     int sh_degree,
     TorchTensorView viewmats,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     TorchTensorView sh_coeffs,
     TorchTensorView out_color,
     TorchTensorView v_out_color,

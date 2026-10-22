@@ -13,21 +13,21 @@ namespace {
 
 // Mirrors BackgroundShFwdParams in shaders/background_sh.slang.
 struct BackgroundShFwdParams {
-    uint64_t viewmats, intrins, dist_coeffs, sh_coeffs, out_img;
+    uint64_t viewmats, intrins, dist_coeffs, sh_coeffs, out_img, shutter;
     uint32_t width, height, B;
     int32_t camera_model;
 };
-static_assert(sizeof(BackgroundShFwdParams) == 5 * 8 + 4 * 4,
+static_assert(sizeof(BackgroundShFwdParams) == 6 * 8 + 4 * 4,
               "params layout must match the slang struct");
 
 // Mirrors BackgroundShBwdParams in shaders/background_sh.slang.
 struct BackgroundShBwdParams {
     uint64_t viewmats, intrins, dist_coeffs, sh_coeffs, out_color,
-        v_out_color, scratch;
+        v_out_color, scratch, shutter, v_shutter;
     uint32_t width, height, B;
     int32_t camera_model;
 };
-static_assert(sizeof(BackgroundShBwdParams) == 7 * 8 + 4 * 4,
+static_assert(sizeof(BackgroundShBwdParams) == 9 * 8 + 4 * 4,
               "params layout must match the slang struct");
 
 // Mirrors BackgroundShBwdReduceParams.
@@ -56,7 +56,7 @@ void render_background_sh_forward(
     int sh_degree,
     TorchTensorView viewmats,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     TorchTensorView sh_coeffs,
     TorchTensorView out_color
 ) {
@@ -75,9 +75,10 @@ void render_background_sh_forward(
     BackgroundShFwdParams p{};
     p.viewmats = std::get<0>(viewmats);
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
     p.sh_coeffs = std::get<0>(sh_coeffs);
     p.out_img = std::get<0>(out_color);
+    p.shutter=(uint64_t)dist_coeffs.shutter.motion;
     p.width = (uint32_t)w;
     p.height = (uint32_t)h;
     p.B = (uint32_t)b;
@@ -100,7 +101,7 @@ void render_background_sh_backward(
     int sh_degree,
     TorchTensorView viewmats,
     TorchTensorView intrins,
-    TorchTensorView dist_coeffs,
+    CameraProjectionData dist_coeffs,
     TorchTensorView sh_coeffs,
     TorchTensorView out_color,
     TorchTensorView v_out_color,
@@ -127,11 +128,13 @@ void render_background_sh_backward(
     BackgroundShBwdParams p{};
     p.viewmats = std::get<0>(viewmats);
     p.intrins = std::get<0>(intrins);
-    p.dist_coeffs = vkk::or_fallback(std::get<0>(dist_coeffs));
+    p.dist_coeffs = vkk::or_fallback((uint64_t)dist_coeffs.coeffs);
     p.sh_coeffs = std::get<0>(sh_coeffs);
     p.out_color = std::get<0>(out_color);
     p.v_out_color = std::get<0>(v_out_color);
     p.scratch = (uint64_t)scratch;
+    p.v_shutter=(uint64_t)dist_coeffs.shutter.gradient;
+    p.shutter=(uint64_t)dist_coeffs.shutter.motion;
     p.width = (uint32_t)w;
     p.height = (uint32_t)h;
     p.B = (uint32_t)b;

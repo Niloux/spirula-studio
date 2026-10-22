@@ -428,6 +428,29 @@ void points_to_normal_vjp(
     v_points = dp_points.d;
 }
 
+[CudaDeviceExport]
+[Differentiable]
+float3 shutter_normal(no_diff float3 rays[4], no_diff float4 fractions, no_diff float centre,
+                      float4 depths, float3 rotation, float3 displacement) {
+    if (any(depths <= float4(0))) return float3(0);
+    float3 points[4];
+    for (int k=0;k<4;++k)
+        points[k]=fractions[k]*displacement + depths[k]*shutter_inverse(fractions[k]*rotation,rays[k]);
+    float3 n=points_to_normal(points);
+    if (dot(n,n)==0) return float3(0);
+    return normalize(shutter_inverse(-centre*rotation,n));
+}
+
+[CudaDeviceExport]
+void shutter_normal_vjp(float3 rays[4], float4 fractions, float centre, float4 depths,
+                        float3 rotation, float3 displacement, float3 v_normal,
+                        out float4 v_depths, out float3 v_rotation, out float3 v_displacement) {
+    DifferentialPair<float4> dd=diffPair(depths);
+    DifferentialPair<float3> dw=diffPair(rotation), dt=diffPair(displacement);
+    bwd_diff(shutter_normal)(rays,fractions,centre,dd,dw,dt,v_normal);
+    v_depths=dd.d; v_rotation=dw.d; v_displacement=dt.d;
+}
+
 [ForceInline]
 [Differentiable]
 float3 depth_to_normal<D : ICameraDistortion>(

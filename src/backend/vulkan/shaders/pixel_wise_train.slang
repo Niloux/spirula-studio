@@ -244,6 +244,8 @@ struct DepthToNormalBwdParams {  // 60 bytes: pushed directly
     float* depths;        // [B,H,W,1]
     float* v_normals;     // [B,H,W,3]
     float* v_depths;      // [B,H,W,1] accumulated in place
+    float* shutter;
+    float* v_shutter;
     uint32_t W;
     uint32_t H;
     uint32_t B;
@@ -280,6 +282,13 @@ void _d2nb_fill_apron<D : ICameraDistortion>(DepthToNormalBwdParams p,
     _d2nb_fill_apron<D>(p, bid, uint2(wg.x * D2NB_TILE, wg.y * D2NB_TILE),  \
                         tid, intrin)
 
+
+void shutter_normal_rays<D : ICameraDistortion>(float* coeffs, uint bid, int camera_model,
+    float4 intrin, float2 pixels[4], out float3 rays[4]) {
+    float dist[D.kNumParams]; load_dist_coeffs<D>(coeffs,bid,dist);
+    for (int k=0;k<4;++k) rays[k]=generate_ray_d2n<D>(pixels[k],intrin,dist,camera_model,true);
+}
+#define _shutter_normal_rays(D) shutter_normal_rays<D>(p.dist_coeffs,bid,p.camera_model,intrin,pixels,rays)
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void d2n_bwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
@@ -293,6 +302,34 @@ void d2n_bwd(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
     if (i == 0 || i == p.W - 1 || j == 0 || j == p.H - 1) inside = false;
 
     float4 intrin = p.intrins[bid];
+    if (!is_null(p.shutter)) {
+        float* m=p.shutter+8*bid;
+        float3 vw=float3(0),vt=float3(0);
+        if (inside) {
+            int dx[4]={-1,1,0,0},dy[4]={0,0,-1,1};
+            float3 rays[4]; float2 pixels[4]; float4 fractions,d;
+            for (int k=0;k<4;++k) {
+                pixels[k]=float2(float(int(i)+dx[k])+.5f,float(int(j)+dy[k])+.5f);
+                fractions[k]=m[7]==0 ? pixels[k].x/p.W-.5f : pixels[k].y/p.H-.5f;
+                d[k]=p.depths[(bid*p.H+uint(int(j)+dy[k]))*p.W+uint(int(i)+dx[k])];
+            }
+            SS_DISPATCH_DIST(_shutter_normal_rays)
+            float centre=m[7]==0 ? (float(i)+.5f)/p.W-.5f : (float(j)+.5f)/p.H-.5f;
+            float3 w=float3(m[0],m[1],m[2]),t=float3(m[3],m[4],m[5]);
+            uint o=((bid*p.H+j)*p.W+i)*3;
+            float3 vn=float3(p.v_normals[o],p.v_normals[o+1],p.v_normals[o+2]);
+            float4 vd;
+            shutter_normal_vjp(rays,fractions,centre,d,w,t,vn,vd,vw,vt);
+            for (int k=0;k<4;++k) atomic_add_f32(p.v_depths+(bid*p.H+uint(int(j)+dy[k]))*p.W+uint(int(i)+dx[k]),vd[k]);
+        }
+        // Every pixel adds into the same six floats; one add per subgroup.
+        vw=WaveActiveSum(vw); vt=WaveActiveSum(vt);
+        if (WaveIsFirstLane() && !is_null(p.v_shutter)) for (int k=0;k<3;++k) {
+            atomic_add_f32(p.v_shutter+8*bid+k,vw[k]); atomic_add_f32(p.v_shutter+8*bid+3+k,vt[k]);
+        }
+        return;
+    }
+
 
     SS_DISPATCH_DIST(_d2nb_call)
     GroupMemoryBarrierWithGroupSync();

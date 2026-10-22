@@ -326,6 +326,7 @@ struct RasterFwd3dgutParams {
     float4* intrins;     // [I]
     float* dist_coeffs;  // [I, 8] or null
     uint2* aabb;         // [..] packed 2D AABB, aabb16.slang
+    float* shutter;
     int* tile_offsets;   // [I, tile_height, tile_width]
     int* flatten_ids;    // [n_isects]
     // outputs (RGB_D pixel type)
@@ -392,6 +393,12 @@ void rasterize_fwd_3dgut(uint3 wg: SV_GroupID, uint tid: SV_GroupThreadID,
     SS_DISPATCH_DIST(_rf_ray)
     inside = inside && ray_ok;
     float3 ray_d = transform_ray_d(R, raydir);
+    if (!is_null(p.shutter)) {
+        float* m = p.shutter + 8*image_id;
+        float s = m[7] == 0 ? px/p.width-.5f : py/p.height-.5f;
+        shutter_ray(R,ct,raydir,float3(m[0],m[1],m[2]),float3(m[3],m[4],m[5]),s,ray_o,ray_d);
+    }
+
 
     bool done = !inside;
 

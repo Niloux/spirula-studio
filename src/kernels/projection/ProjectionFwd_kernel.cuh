@@ -21,7 +21,7 @@ __global__ void projection_fused_fwd_kernel(
     typename SplatPrimitive::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -64,6 +64,7 @@ __global__ void projection_fused_fwd_kernel(
         image_width, image_height,
     };
     cam.dist_coeffs = dist_coeffs_buffer.load<distortion>(cid);
+        cam.shutter = dist_coeffs_buffer.shutter.camera(cid);
 
     // Load splat
     typename SplatPrimitive::World splat_world;
@@ -119,7 +120,7 @@ void projection_fused_fwd_kernel_wrapper(
     typename SplatPrimitive::WorldBuffer splats_world,
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs

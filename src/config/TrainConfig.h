@@ -195,6 +195,10 @@ inline bool train_choices_free_form(const char* choices) {
                                                                              \
     /* ==== splats -- what a splat is and how the splats start out ==== */   \
     X(std::string, primitive, "3dgs", "splats", "basic", "3dgs|mip|3dgut")   \
+    X(std::string, rolling_shutter, "auto", "splats", "advanced", "auto|off|fixed|optimize") \
+    X(float, shutter_rotation_lr, 1e-4f, "splats", "expert", "")             \
+    X(float, shutter_readout_lr, 1e-6f, "splats", "expert", "")              \
+    X(float, shutter_regularization, 20.0f, "splats", "expert", "")          \
     X(int, sh_degree, 3, "splats", "basic", "")                              \
     X(int, sb_lobes, 0, "splats", "basic", "")                               \
     X(int, sh_degree_warmup_every, 1000, "splats", "expert", "")             \
@@ -436,6 +440,7 @@ inline std::string train_mask_mode(const TrainConfig& c, bool default_segment = 
     X(load_depths) X(load_normals) X(relative_scale) \
     X(cap_max) X(random_init) X(random_init_fraction) X(random_init_distribution) \
     X(random_init_center) X(random_init_spread) X(random_init_std) \
+    X(rolling_shutter) X(shutter_rotation_lr) X(shutter_readout_lr) X(shutter_regularization) \
     X(roi_region) \
     /* end */
 

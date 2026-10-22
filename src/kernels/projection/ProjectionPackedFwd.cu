@@ -23,7 +23,7 @@ void projection_packed_mask_kernel_wrapper(
     typename SplatPrimitive::WorldBuffer splats_world,  // [N, ...]
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     // outputs
@@ -45,7 +45,7 @@ void projection_packed_fwd_kernel_wrapper(
     typename SplatPrimitive::WorldBuffer splats_world,  // [N, ...]
     const float *__restrict__ viewmats, // [C, 4, 4]
     const float4 *__restrict__ intrins,  // [C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint32_t image_width,
     const uint32_t image_height,
     const uint32_t* __restrict__ mask_bits,
@@ -82,7 +82,7 @@ inline std::tuple<
     const uint32_t image_height,
     const CameraModelType camera_model,
     const CameraDistortionType distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const uint8_t* sh_value_packed,
     const float2* sh_value_bounds,
@@ -185,7 +185,7 @@ std::tuple<
     const uint32_t image_height,
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,
@@ -231,7 +231,7 @@ std::tuple<
     const uint32_t image_height,
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,
@@ -278,7 +278,7 @@ std::tuple<
     const uint32_t image_height,
     const std::string camera_model,
     const std::string distortion,
-    const TorchTensorView dist_coeffs,
+    const CameraProjectionData dist_coeffs,
     DeviceVector<float> radii,
     const std::optional<TorchTensorView> sh_value_packed,
     const std::optional<TorchTensorView> sh_value_bounds,

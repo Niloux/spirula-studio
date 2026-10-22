@@ -74,7 +74,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
 #if IS_EVAL3D
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed, core/AabbQuant.cuh
 #endif
     const uint32_t image_width,
@@ -182,10 +182,15 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     [[maybe_unused]] __shared__ float median_pending_Tfar[output_median ? BLOCK_SIZE : 1];
 
 #if IS_EVAL3D
-    float3 ray_o = SlangProjectionUtils::transform_ray_o(R, t);
+    float3 ray_o_ref = SlangProjectionUtils::transform_ray_o(R, t);
+    const bool rolling = dist_coeffs_buffer.shutter.motion != nullptr;
     float3 total_v_ray_o = make_float3(0.0f, 0.0f, 0.0f);
 
     __shared__ float3 shared_v_ray_d[output_viewmat_grad ? BLOCK_SIZE : 1];
+    __shared__ float3 shared_ray_o[BLOCK_SIZE];
+    __shared__ float3 shared_ray_ref[output_viewmat_grad ? BLOCK_SIZE : 1];
+    __shared__ float3 shared_v_ray_o[output_viewmat_grad ? BLOCK_SIZE : 1];
+
 #endif
 
     constexpr uint SPLAT_BATCH_SIZE_CONST = dist_any(dist_type) ?
@@ -212,6 +217,19 @@ __global__ void rasterize_to_pixels_bwd_kernel(
             &raydir
         );
         float3 ray_d = SlangProjectionUtils::transform_ray_d(R, raydir);  // mul(raydir, R);
+        float3 origin = ray_o_ref;
+        if (rolling) {
+            const float* m = dist_coeffs_buffer.shutter.motion + image_id*8;
+            float s = m[7] == 0 ? px/image_width-.5f : py/image_height-.5f;
+            SlangProjectionUtils::shutter_ray(R,t,raydir,make_float3(m[0],m[1],m[2]),
+                make_float3(m[3],m[4],m[5]),s,&origin,&ray_d);
+        }
+        shared_ray_o[pix_id_local] = origin;
+        if (output_viewmat_grad) {
+            shared_ray_ref[pix_id_local] = raydir;
+            shared_v_ray_o[pix_id_local] = make_float3(0.0f);
+        }
+
         shared_ray_d_pix_bin_final[pix_id_local] =
             {ray_d.x, ray_d.y, ray_d.z, __int_as_float(bin_final)};
     #else
@@ -409,6 +427,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
             if (pix_id < 0 || pix_id >= BLOCK_SIZE || !active)
                 continue;
         #if IS_EVAL3D
+            float3 ray_o = rolling ? shared_ray_o[pix_id] : ray_o_ref;
             float4 ray_d_pix_bin_final = shared_ray_d_pix_bin_final[pix_id];
             if (splat_idx > __float_as_int(ray_d_pix_bin_final.w))
                 continue;
@@ -581,6 +600,7 @@ __global__ void rasterize_to_pixels_bwd_kernel(
             if (output_viewmat_grad) {
                 total_v_ray_o += v_ray_o_alpha + v_ray_o_color;
                 shared_v_ray_d[pix_id] += v_ray_d_alpha + v_ray_d_color;
+                if (rolling) shared_v_ray_o[pix_id] += v_ray_o_alpha + v_ray_o_color;
             }
         #endif
 
@@ -613,7 +633,27 @@ __global__ void rasterize_to_pixels_bwd_kernel(
     __syncwarp();  // done reading surv[] before the next segment overwrites it
   }  // segment loop
 #if IS_EVAL3D
-    if (output_viewmat_grad) {
+    if (output_viewmat_grad && dist_coeffs_buffer.shutter.gradient) {
+        const float* m = dist_coeffs_buffer.shutter.motion + image_id*8;
+        float3 gw = make_float3(0.0f), gd = make_float3(0.0f);
+        for (uint p = thread_id; p < BLOCK_SIZE; p += SPLAT_BATCH_SIZE_CONST) {
+            float px = float(blockIdx.z*TILE_SIZE_DX + p%TILE_SIZE_DX)+.5f;
+            float py = float(blockIdx.y*TILE_SIZE_DY + p/TILE_SIZE_DX)+.5f;
+            if (px >= image_width || py >= image_height || dot(shared_ray_ref[p],shared_ray_ref[p]) == 0) continue;
+            float s = m[7] == 0 ? px/image_width-.5f : py/image_height-.5f;
+            float3 w, d;
+            SlangProjectionUtils::shutter_ray_vjp(R,shared_ray_ref[p],make_float3(m[0],m[1],m[2]),s,
+                shared_v_ray_o[p],shared_v_ray_d[p],&w,&d);
+            gw += w; gd += d;
+        }
+        float values[6] = {gw.x,gw.y,gw.z,gd.x,gd.y,gd.z};
+        for (int k=0;k<6;++k) {
+            float v = values[k];
+            warpSum(v,warp);
+            if (warp.thread_rank()==0) atomicAdd(dist_coeffs_buffer.shutter.gradient+image_id*8+k,v);
+        }
+    }
+    if (output_viewmat_grad && !rolling) {
         // accumulate to viewmat gradient
         float3x3 v_R;
         float3 v_t;
@@ -695,7 +735,7 @@ void rasterize_to_pixels_bwd_kernel_wrapper(
 #if IS_EVAL3D
     const float *__restrict__ viewmats, // [B, C, 4, 4]
     const float4 *__restrict__ intrins,  // [B, C, 4], fx, fy, cx, cy
-    const CameraDistortionCoeffsBuffer dist_coeffs_buffer,
+    const CameraProjectionData dist_coeffs_buffer,
     const uint2 *__restrict__ aabb,   // [..., N] packed, core/AabbQuant.cuh
 #endif
     const uint32_t image_width,

@@ -409,6 +409,16 @@ float add_blur(const float eps2d, inout float2x2 covar, out float compensation) 
 }
 
 
+[CudaDeviceExport]
+// Intersectors derive the centre from the clipped AABB; enclose all four corners.
+float3 shutter_conic(float4 aabb, float opacity, uint width, uint height) {
+    float2 low=clamp(aabb.xy,float2(0),float2(width-1,height-1));
+    float2 high=clamp(aabb.zw,float2(0),float2(width-1,height-1));
+    float2 half_extent=(high-low)*.5f+float2(1);
+    float q=log(max(opacity,ALPHA_THRESHOLD)/ALPHA_THRESHOLD);
+    return float3(q/(half_extent.x*half_extent.x),0,q/(half_extent.y*half_extent.y));
+}
+
 #define _projection_3dgs_ARGS(NC) \
     const bool antialiased, \
     const float3 mean, const float4 quat, const float3 scale, const float in_opacity, \
@@ -622,6 +632,148 @@ _DEF_projection_3dgs_tiers(projection_3dgut_persp, CameraModelType::PINHOLE, tru
 _DEF_projection_3dgs_tiers(projection_3dgut_fisheye, CameraModelType::FISHEYE, true)
 _DEF_projection_3dgs_tiers(projection_3dgut_equisolid, CameraModelType::EQUISOLID, true)
 _DEF_projection_3dgs(projection_3dgut_equirect_none, CameraModelType::EQUIRECTANGULAR, DistNone, 1, false, true)
+
+
+/* Rolling-shutter Projection */
+
+[ForceInline]
+bool shutter_project_point<let camera_model : CameraModelType, D : ICameraDistortion>(
+    float3 p, float4 intrins, float dist_coeffs[D.kNumParams], out float2 uv
+) {
+    if (camera_model == CameraModelType::PINHOLE)
+        return persp_proj<D, false>(p, intrins, dist_coeffs, uv);
+    if (camera_model == CameraModelType::FISHEYE)
+        return fisheye_proj<D, false>(p, intrins, dist_coeffs, uv);
+    if (camera_model == CameraModelType::EQUISOLID)
+        return equisolid_proj<D, false>(p, intrins, dist_coeffs, uv);
+    return equirect_proj<false>(p, intrins, uv);
+}
+
+// Undistorted image units per radian of view direction, theta off the axis;
+// 0 where the lens leaves it unbounded.
+float shutter_lens_gain(CameraModelType camera_model, float theta) {
+    if (camera_model == CameraModelType::PINHOLE) {
+        float c = cos(theta);
+        return theta < 1.5f ? 1.0f / (c * c) : 0.0f;
+    }
+    if (theta >= 3.1f)
+        return 0.0f;
+    if (camera_model == CameraModelType::FISHEYE)
+        return theta > 1e-3f ? max(1.0f, theta / sin(theta)) : 1.0f;
+    return 1.0f / cos(0.5f * theta);
+}
+
+// Encloses {x : x^T conic x <= k2} grown by a disc of radius pad: the sum of two
+// ellipses fits in (1 + 1/q) S1 + (1 + q) S2 for any q > 0, and
+// q = sqrt(tr S1 / tr S2) gives the smallest trace.
+float3 shutter_grow_conic(float3 conic, float k2, float pad) {
+    if (pad <= 0.0f)
+        return conic;
+    float3 shape = float3(conic.z, -conic.y, conic.x) *
+        (k2 / (conic.x * conic.z - conic.y * conic.y));
+    float q = sqrt(0.5f * (shape.x + shape.z)) / pad;
+    float disc = (1.0f + q) * pad * pad;
+    float3 grown = shape * (1.0f + 1.0f / q) + float3(disc, 0.0f, disc);
+    return float3(grown.z, -grown.y, grown.x) *
+        (k2 / (grown.x * grown.z - grown.y * grown.y));
+}
+
+#define _shutter_projection_ARGS(NC) \
+    const float3 mean, const float4 quat, const float3 scale, const float in_opacity, \
+    const float3x3 R, const float3 t, \
+    const float fx, const float fy, const float cx, const float cy, \
+    const float dist_coeffs[NC], const uint image_width, const uint image_height, \
+    const float3 rotation, const float3 displacement, const bool rows, \
+    out float4 aabb_xyxy, out float sorting_depth, out float radius, \
+    out float3 conic, out float opacity
+
+// The 3DGUT footprint at the readout instant of the splat's centre, grown by
+// the image motion across the lines it spans (docs/notes/rolling-shutter.md).
+// Colour, sorting depth and radius keep the reference pose.
+[ForceInline]
+void shutter_projection_3dgut<let camera_model : CameraModelType, D : ICameraDistortion>(
+    _shutter_projection_ARGS(D.kNumParams)
+) {
+    float3 q = mul(R, mean) + t;
+    sorting_depth = get_sorting_depth(camera_model, q);
+    radius = view_radius_3dgs(mean, scale, in_opacity, transform_ray_o(R, t));
+    float4 intrins = float4(fx, fy, cx, cy);
+    float4 full = float4(0.0f, 0.0f, float(image_width - 1), float(image_height - 1));
+    float n = float(rows ? image_height : image_width);
+
+    // A readout moves the image a few pixels, so two steps converge.
+    float s = 0.0f;
+    float3 p = q;
+    [ForceUnroll]
+    for (int k = 0; k < 2; ++k) {
+        float2 uv;
+        if (!shutter_project_point<camera_model, D>(p, intrins, dist_coeffs, uv))
+            break;
+        s = clamp((rows ? uv.y : uv.x) / n - 0.5f, -0.5f, 0.5f);
+        float3 v = q - s * displacement;
+        p = v + cross(s * rotation, v);
+    }
+    float3 w = s * rotation;
+    float3x3 A = float3x3(1.0f, -w.z, w.y, w.z, 1.0f, -w.x, -w.y, w.x, 1.0f);
+    float2 mean2d;
+    float depth, instant_depth, instant_radius;
+    projection_3dgs<camera_model, D, false, true>(
+        false, mean, quat, scale, in_opacity, mul(A, R), mul(A, t - s * displacement),
+        fx, fy, cx, cy, dist_coeffs, image_width, image_height,
+        aabb_xyxy, instant_depth, instant_radius, mean2d, depth, conic, opacity);
+    if (!(aabb_xyxy.z > aabb_xyxy.x && aabb_xyxy.w > aabb_xyxy.y))
+        return;
+
+    // Bound the image speed of every point of the splat, in pixels per unit s.
+    float k2 = 2.0f * log(opacity / ALPHA_THRESHOLD);
+    float wn = length(rotation), dn = length(displacement), m = length(q);
+    float r = sqrt(k2) * exp(max(scale.x, max(scale.y, scale.z)));
+    float near = m - r - 0.5f * dn;
+    float theta = acos(clamp(q.z / m, -1.0f, 1.0f)) + asin(min((r + 0.5f * dn) / m, 1.0f)) + 0.5f * wn;
+    float gain = shutter_lens_gain(camera_model, theta);
+    float jac = 1.0f;
+    if (!D.kIsIdentity) {
+        float2 u = camera_model == CameraModelType::PINHOLE ? p.xy / p.z
+            : camera_model == CameraModelType::FISHEYE ? fisheye_proj(p) : equisolid_proj(p);
+        float2x2 J = camera_distortion_jac<D>(u, dist_coeffs);
+        float f2 = dot(J[0], J[0]) + dot(J[1], J[1]), det = determinant(J);
+        jac = sqrt(0.5f * (f2 + sqrt(max(f2 * f2 - 4.0f * det * det, 0.0f))));
+    }
+    float speed = max(fx, fy) * jac * gain *
+        (wn + (dn > 0.0f ? (1.0f + 0.5f * wn) * dn / near : 0.0f));
+    // A line |y - c| from the instant's line is read |y - c| / n later, so the
+    // footprint there has moved at most speed * (span + pad) / n <= pad.
+    float c = (s + 0.5f) * n;
+    float span = rows ? max(c - aabb_xyxy.y, aabb_xyxy.w - c) : max(c - aabb_xyxy.x, aabb_xyxy.z - c);
+    if (camera_model == CameraModelType::EQUIRECTANGULAR || gain <= 0.0f ||
+        (dn > 0.0f && near <= 0.0f) || !(speed < n)) {
+        aabb_xyxy = full;
+        conic = shutter_conic(full, opacity, image_width, image_height);
+        return;
+    }
+    float pad = speed * span / (n - speed);
+    aabb_xyxy += float4(-pad, -pad, pad, pad);
+    conic = shutter_grow_conic(conic, k2, pad);
+}
+
+#define _DEF_shutter_projection(funname, MODEL, D, NC) \
+    [CudaDeviceExport] \
+    void funname(_shutter_projection_ARGS(NC)) { \
+        shutter_projection_3dgut<MODEL, D>( \
+            mean, quat, scale, in_opacity, R, t, fx, fy, cx, cy, dist_coeffs, \
+            image_width, image_height, rotation, displacement, rows, \
+            aabb_xyxy, sorting_depth, radius, conic, opacity); \
+    }
+
+#define _DEF_shutter_projection_tiers(base, MODEL) \
+    _DEF_shutter_projection(base##_none, MODEL, DistNone, 1) \
+    _DEF_shutter_projection(base##_opencv, MODEL, DistOpenCV, 4) \
+    _DEF_shutter_projection(base##_prism, MODEL, DistThinPrism, 8)
+
+_DEF_shutter_projection_tiers(shutter_projection_3dgut_persp, CameraModelType::PINHOLE)
+_DEF_shutter_projection_tiers(shutter_projection_3dgut_fisheye, CameraModelType::FISHEYE)
+_DEF_shutter_projection_tiers(shutter_projection_3dgut_equisolid, CameraModelType::EQUISOLID)
+_DEF_shutter_projection(shutter_projection_3dgut_equirect_none, CameraModelType::EQUIRECTANGULAR, DistNone, 1)
 
 
 /* Backward Projection */

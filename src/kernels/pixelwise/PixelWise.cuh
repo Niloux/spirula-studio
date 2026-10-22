@@ -2,6 +2,7 @@
 
 
 #include <core/Tensor.h>
+#include "core/Common.cuh"
 
 #include <stdexcept>
 #include <string>
@@ -369,7 +370,7 @@ void depth_to_normal_forward(
     std::string camera_model,
     std::string distortion,
     TorchTensorView intrins,            // [B, 4]
-    TorchTensorView dist_coeffs,        // [B, 8]
+    CameraProjectionData dist_coeffs,        // [B, 8]
     bool is_ray_depth,
     DeviceTensor3D<float>  depths,      // [B, H, W, 1]
     DeviceTensor3D<float3> normals      // [B, H, W, 3]
@@ -380,7 +381,7 @@ void depth_to_normal_backward(
     std::string camera_model,
     std::string distortion,
     TorchTensorView intrins,            // [B, 4]
-    TorchTensorView dist_coeffs,        // [B, 8]
+    CameraProjectionData dist_coeffs,        // [B, 8]
     bool is_ray_depth,
     DeviceTensor3D<float>  depths,      // [B, H, W, 1]
     DeviceTensor3D<float3> v_normals,   // [B, H, W, 3]
