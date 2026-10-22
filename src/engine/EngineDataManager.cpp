@@ -561,21 +561,16 @@ static int _install_and_forward(const DecodedBatch& b, std::string primitive,
     return _batch_views(b, 0);
 }
 
-int engine_eval_forward(std::string primitive, int sh_degree, bool packed,
+int engine_eval_forward(int index, std::string primitive, int sh_degree, bool packed,
                         bool input_depth_is_ray_depth) {
     if (!engine().dm)
         throw std::runtime_error(
             "engine_eval_forward: DataManager not configured — call "
             "engine_setup_data_manager(...) with the eval split first.");
 
-    const TrainStep& stp = engine().dm->next_train_step();
-    if (stp.subs.empty()) return 0;
-    if (stp.subs.size() != 1)
-        throw std::runtime_error(
-            "engine_eval_forward: expected one sub-batch per eval step "
-            "(set train_batch_size = 1)");
-
-    const DecodedBatch& b = *stp.subs[0];
+    // Static for the same reason as engine_preview_forward's.
+    static DecodedBatch b;
+    engine().dm->fetch_one((int32_t)index, b);
     if (b.face_passes.size() > 1)
         throw std::runtime_error(
             "engine_eval_forward: the eval split must be baked with uniform "

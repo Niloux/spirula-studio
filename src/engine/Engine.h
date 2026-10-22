@@ -482,10 +482,10 @@ double engine_take_data_wait_seconds();
 // the worker is parked on, false abandons the pipeline. See DataManager.h.
 void engine_resolve_data_error(bool retry);
 
-// The next eval-split batch, installed through training's own decode and warp
-// path and rendered forward only; 0 once exhausted, else its POST-split views.
-// Needs engine_setup_data_manager with the eval split, which replaces training's.
-int engine_eval_forward(std::string primitive, int sh_degree, bool packed,
+// Eval-split image `index`, installed through training's own decode and warp
+// path and rendered forward only; returns its POST-split views. Needs
+// engine_setup_data_manager with the eval split, which replaces training's.
+int engine_eval_forward(int index, std::string primitive, int sh_degree, bool packed,
                         bool input_depth_is_ray_depth);
 
 // Same, for ONE image by dataset index (the GUI's compare view), rendering one

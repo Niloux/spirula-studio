@@ -2115,6 +2115,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
     // the per-image lists in metrics.json do not depend on who finished first.
     struct ViewJob {
         int64_t index = 0;
+        std::string name;
         int H = 0, W = 0, C = 0;
         std::vector<float> gt, pred;
         std::vector<uint8_t> keep;            // H*W, empty without a mask
@@ -2123,6 +2124,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
     };
     struct ViewScore {
         bool  filled = false;
+        std::string name;
         float l1 = 0, psnr = 0, ssim = 0, cc_l1 = 0, cc_psnr = 0, cc_ssim = 0;
         std::vector<float> lpips, cc_lpips;   // one per lpips_names entry
         bool  has_depth = false;
@@ -2197,6 +2199,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         correct();
         ViewScore s;
         s.filled  = true;
+        s.name    = j.name;
         s.l1      = image_l1(g, j.pred.data(), npx, j.C, keep);
         s.psnr    = image_psnr(g, j.pred.data(), npx, j.C, keep);
         s.ssim    = image_ssim(g, j.pred.data(), j.H, j.W, j.C, keep);
@@ -2304,6 +2307,15 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
 
     const int sh_deg = cfg.sh_degree;
     int64_t next_slot = 0;
+    // Relative to the dataset root, so runs over a moved copy still line up.
+    auto view_name = [&](int64_t i) {
+        std::string n = eds.image_filenames[(size_t)i], root = cfg.data;
+        std::replace(n.begin(), n.end(), '\\', '/');
+        std::replace(root.begin(), root.end(), '\\', '/');
+        while (!root.empty() && root.back() == '/') root.pop_back();
+        if (!root.empty() && n.rfind(root + "/", 0) == 0) n.erase(0, root.size() + 1);
+        return n;
+    };
     bool stopped = false;
 
     for (int64_t i = 0; i < eds.num_cameras; i++) {
@@ -2313,9 +2325,9 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         std::vector<uint8_t> labels;
         {
             std::lock_guard<std::mutex> lk(engine_mutex);
-            int n_view = engine_eval_forward(cfg.primitive, sh_deg, cfg.packed,
-                                             st.input_depth_is_ray_depth);
-            if (n_view == 0) break;
+            if (engine_eval_forward((int)i, cfg.primitive, sh_deg, cfg.packed,
+                                    st.input_depth_is_ray_depth) == 0)
+                continue;
             auto shape = engine_get_render_rgb_shape();
             B = std::get<0>(shape); H = std::get<1>(shape);
             W = std::get<2>(shape); Cc = std::get<3>(shape);
@@ -2358,6 +2370,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         for (int64_t v = 0; v < B; v++) {
             ViewJob job;
             job.index = next_slot++;
+            job.name = view_name(i) + (B > 1 ? "#" + std::to_string(v) : "");
             job.H = (int)H; job.W = (int)W; job.C = (int)Cc;
             job.gt.assign(gt.begin() + (size_t)(v * view_px),
                           gt.begin() + (size_t)((v + 1) * view_px));
@@ -2411,8 +2424,10 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
     for (const ViewScore& s : scores)
         with_lpips = with_lpips && (!s.filled || s.lpips.size() == lpips_names.size());
     std::map<std::string, std::vector<float>> per_image;
+    std::vector<std::string> names, depth_names;
     for (const ViewScore& s : scores) {
         if (!s.filled) continue;
+        names.push_back(s.name);
         per_image["l1"].push_back(s.l1);
         per_image["psnr"].push_back(s.psnr);
         per_image["ssim"].push_back(s.ssim);
@@ -2425,6 +2440,7 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         }
         // Only the views with a depth map, so these lists can be shorter.
         if (s.has_depth) {
+            depth_names.push_back(s.name);
             per_image["depth_median_abs_error"].push_back(s.depth_median_error);
             per_image["depth_within_2cm"].push_back(s.depth_within_2cm);
         }
@@ -2456,6 +2472,21 @@ void TrainerSession::eval(const std::function<void(const EvalProgress&)>& on_pro
         mf << "]";
         first = false;
     }
+    auto write_names = [&](const char* key, const std::vector<std::string>& v) {
+        mf << ",\n    \"" << key << "\": [";
+        for (size_t i = 0; i < v.size(); i++) {
+            mf << (i ? ", " : "") << '"';
+            for (char c : v[i]) {
+                if (c == '"' || c == '\\') mf << '\\';
+                if ((unsigned char)c >= 0x20) mf << c;
+            }
+            mf << '"';
+        }
+        mf << "]";
+    };
+    // Aligned with the per-image lists; the depth lists with depth_image_names.
+    write_names("image_names", names);
+    if (!depth_names.empty()) write_names("depth_image_names", depth_names);
     for (const auto& [k, v] : avg)
         mf << ",\n    \"avg_" << k << "\": " << v;
     mf << ",\n    \"num_eval_images\": " << per_image.begin()->second.size();

@@ -387,7 +387,8 @@ host-side reconstruction of it.
 
 `src/app/EvalMetrics.{h,cpp}` scores each view: `l1`, `psnr`, `ssim`, and the
 `cc_` variants on the colour-corrected render. Results go to `metrics.json` as
-per-image lists plus `avg_*` scalars. Verified against torchmetrics on 13 real
+per-image lists in eval-split order, named by `image_names` (the shorter depth
+lists by `depth_image_names`), plus `avg_*` scalars. Verified against torchmetrics on 13 real
 eval pairs: l1 and psnr agree to 1e-7, ssim to 1e-5. `color_correct` is closer
 to a float64 reference than the torch implementation it replaces (3e-8 vs
 1.4e-3 relative) — torch accumulates the normal equations in float32.
