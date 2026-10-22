@@ -1097,7 +1097,7 @@ struct BtTaps {
 // The adjoint is its own pass because it needs g beyond a tile.
 template<bool adjoint, int kF1 = -1, int kF2 = -1>
 __global__ void _ssim_bt_blur_kernel(
-    int B, int H, int W, SsimImg img1, SsimImg img2, const bool* __restrict__ masks,
+    int B, int H, int W, SsimImg img1, SsimImg img2, const uint8_t* __restrict__ masks,
     int B_mask, int H_mask, int W_mask, float sat, const float* __restrict__ g,
     BtTaps t, float* __restrict__ out, float* __restrict__ norm
 ) {
@@ -1181,7 +1181,7 @@ __global__ void __launch_bounds__(256) _ssim_bt_kernel(
     SsimImg img1, SsimImg img2,
     const float* __restrict__ blurred,   // [B, H, W, 3] B img1
     const float* __restrict__ norm,      // [B, H, W] the blur's kept weight
-    const bool* __restrict__ masks,
+    const uint8_t* __restrict__ masks,
     int B_mask, int H_mask, int W_mask,
     float sat,
     const float* __restrict__ mask_w,
@@ -1796,7 +1796,7 @@ __global__ void _flip_mask_coverage_kernel(
     const SsimImg img1,
     const SsimImg img2,
     float sat,
-    const bool* __restrict__ masks,
+    const uint8_t* __restrict__ masks,
     int B_mask, int H_mask, int W_mask,
     uint4* __restrict__ out  // [B, H, W]
 ) {
@@ -1860,7 +1860,7 @@ __global__ void fused_flip_kernel(
     int B, int H, int W,
     SsimImg img1,
     SsimImg img2,
-    const bool* __restrict__ masks,
+    const uint8_t* __restrict__ masks,
     int B_mask, int H_mask, int W_mask,
     float sat,
     const uint4* __restrict__ cov,   // [B, H, W] from the coverage kernel, or null
@@ -2224,7 +2224,7 @@ void fused_ssim_backward(
 }
 
 static void _launch_ssim_bt(
-    int B, int H, int W, SsimImg img1, SsimImg img2, const bool* masks,
+    int B, int H, int W, SsimImg img1, SsimImg img2, const uint8_t* masks,
     int B_mask, int H_mask, int W_mask, float sat, const float* mask_w,
     float dL_dmap, float* dL_dimg1, float* val, float map_weight, float* map,
     int map_mode, float sigma
@@ -2541,7 +2541,7 @@ static inline void _launch_fused_flip_inplace(
 ) {
     const auto& s = std::get<2>(img1);
     int B = s[0], H = s[1], W = s[2];
-    bool* mask_ptr = _nullable_b(mask);
+    uint8_t* mask_ptr = _nullable_b(mask);
     int B_mask = 0, H_mask = 0, W_mask = 0;
     if (mask_ptr != nullptr) {
         const auto& ms = std::get<2>(mask);

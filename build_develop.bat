@@ -1,5 +1,8 @@
 @echo off
 setlocal
+rem CMake's showIncludes probe and Ninja must use the same UTF-8 code page.
+chcp 65001 >nul
+if errorlevel 1 exit /b 1
 rem Development build for Windows. Extra arguments are passed to CMake, e.g.
 rem   build_develop.bat -DSS_BACKEND=vulkan -DSS_BUILD_GUI=OFF
 rem Builds the standalone spirula.exe into build_cuda\ or build_vulkan\.

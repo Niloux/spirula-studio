@@ -70,4 +70,4 @@ if match:
     header = header.replace(match[0], open(match[1]).read())
 
 header = process(header)
-safe_write(header_filename, header)
+safe_write(header_filename, header.rstrip() + "\n")
